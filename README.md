@@ -1,9 +1,15 @@
-# Price Book System — Sir's Private Multiplier Engine
+# FAF Price Book System
 
-Streamlit + SQLite price book for Amish / builder furniture lists.
+**Foothills Amish Furniture** — private multiplier engine for builder wholesale lists, retail pricing, search, and customer quotes.
+
+Streamlit + SQLite. Default retail multiplier **2.7×** (adjustable per vendor).
 
 **Builders ship wide species matrices. We store long-form rows**  
-(one row = SKU × species tier × finish) and apply multipliers (default **2.7×**).
+(one row = SKU × species tier × finish).
+
+> **GitHub:** create a **private** repository named `faf-pricebook-system`  
+> (or link this folder in GitHub Desktop → **Publish repository**).  
+> Local `*.db` files and `.venv` are gitignored — pricing data stays on your Mac unless you choose otherwise.
 
 ## Quick start
 

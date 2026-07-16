@@ -34,7 +34,7 @@ def get_service() -> PriceBookService:
 svc = get_service()
 
 st.set_page_config(
-    page_title="Price Book System",
+    page_title="FAF Price Book",
     page_icon="🔥",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -44,7 +44,8 @@ st.set_page_config(
 # Sidebar
 # ---------------------------------------------------------------------------
 
-st.sidebar.title("🔥 Price Book")
+st.sidebar.title("🔥 FAF Price Book")
+st.sidebar.caption("Foothills Amish Furniture")
 stats = svc.stats()
 st.sidebar.metric("Master rows", f"{stats['rows']:,}")
 st.sidebar.caption(
@@ -757,6 +758,6 @@ python -m backend.cli dups
     )
 
 st.caption(
-    "v2.0 — Full product · Search · Import · Batch · Quotes · Vendors · Admin · "
+    "FAF Price Book v2.0 · Search · Import · Batch · Quotes · Vendors · Admin · "
     "backend.PriceBookService"
 )
