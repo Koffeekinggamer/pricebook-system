@@ -748,7 +748,7 @@ with tab_admin:
     st.markdown("##### CLI cheat sheet")
     st.code(
         """
-source ~/pricebook-system/.venv/bin/activate
+source ~/FAF-pricebook/.venv/bin/activate
 python -m backend.cli stats
 python -m backend.cli search "oak nightstand"
 python -m backend.cli import-xlsx FILE --vendor NAME --use-markup --mode upsert
