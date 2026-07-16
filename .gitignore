@@ -1,0 +1,40 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local data — keep price book DB private (not on GitHub)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+master_pricebook.db
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Secrets / env
+.env
+.env.*
+*.pem
+credentials.json
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Temp / analysis
+/tmp/
+*.log
