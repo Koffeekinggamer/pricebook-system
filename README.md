@@ -1,4 +1,4 @@
-# FAF Price Book System
+# FAF Pricebook
 
 **Foothills Amish Furniture** — private multiplier engine for builder wholesale lists, retail pricing, search, and customer quotes.
 
@@ -7,15 +7,16 @@ Streamlit + SQLite. Default retail multiplier **2.7×** (adjustable per vendor).
 **Builders ship wide species matrices. We store long-form rows**  
 (one row = SKU × species tier × finish).
 
-> **GitHub:** create a **private** repository named `faf-pricebook-system`  
-> (or link this folder in GitHub Desktop → **Publish repository**).  
-> Local `*.db` files and `.venv` are gitignored — pricing data stays on your Mac unless you choose otherwise.
+> **Status:** Saved for later. See **CONTINUE.md** for resume steps.  
+> **Folder:** `~/FAF-pricebook`  
+> **GitHub (when ready):** private repo `faf-pricebook-system` via Desktop Publish or SSH.  
+> Local `*.db` and `.venv` are gitignored.
 
 ## Quick start
 
 ```bash
-cd ~/pricebook-system
-python3 -m venv .venv
+cd ~/FAF-pricebook
+python3 -m venv .venv   # only if venv missing
 source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run pricebook_app.py
