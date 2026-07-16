@@ -1,29 +1,22 @@
-# FAF Pricebook — pause note (resume later)
+# FAF Pricebook — status
 
-**Saved:** 2026-07-16  
-**Product:** FAF (Foothills Amish Furniture) Price Book System  
-**Local folder:** `~/FAF-pricebook` (renamed from `pricebook-system`)
+**Updated:** 2026-07-16  
+**Folder:** `~/FAF-pricebook`  
+**GitHub (private):** https://github.com/Koffeekinggamer/faf-pricebook-system
 
-## What’s done
+## Done
 
-- Full app v2: Search · Import · Batch · Quotes · Vendors · Admin
-- Backend: `PriceBookService`, upsert, batch, quotes, CLI
-- Wide Excel unpivot + PDF import parsers
-- Git repo on `main` (2 commits; clean working tree)
-- SSH key created on this Mac (`~/.ssh/id_ed25519.pub`)
-- `.gitignore` keeps `.venv` and `*.db` off GitHub
+| Item | Status |
+|------|--------|
+| Full app (Search · Import · Batch · Quotes · Vendors · Admin) | ✅ |
+| Backend + CLI | ✅ |
+| Git repo + push to GitHub | ✅ `main` → `Koffeekinggamer/faf-pricebook-system` |
+| Batch load Completed Excel Pricebooks | ✅ |
+| Genuine Oak Master import | ✅ |
+| Master DB populated | ✅ ~59,926 rows · 14 vendors · 243 collections |
+| Sample quote + PDF | ✅ |
 
-## Not finished (next session)
-
-1. **Add SSH public key to GitHub** → [github.com/settings/keys](https://github.com/settings/keys)  
-   Then: `ssh -T git@github.com` (expect: `Hi USERNAME!`)
-2. **Publish private repo** `faf-pricebook-system`  
-   - GitHub Desktop: Add Local Repository → this folder → **Publish repository** (Private)  
-   - Or: `git remote add origin git@github.com:USERNAME/faf-pricebook-system.git && git push -u origin main`
-3. Optional: batch-load Completed Excel Pricebooks into master DB
-4. Optional: use Quotes on the floor
-
-## Run the app
+## Run
 
 ```bash
 cd ~/FAF-pricebook
@@ -31,19 +24,29 @@ source .venv/bin/activate
 streamlit run pricebook_app.py
 ```
 
-## Resume prompt for Grok
+## Git (HTTPS works via GitHub Desktop credentials)
+
+```bash
+cd ~/FAF-pricebook
+git pull
+git add -A && git commit -m "your message"
+git push
+```
+
+SSH key add to GitHub still optional (`Permission denied` until public key is on the account). HTTPS push is working.
+
+## Notes / later polish
+
+- A few `.xls` files skipped (0 rows): LUXHOME WHOLESALE, AJ's LUxhome addon — may need manual map.
+- Patio Kraft only got 1 row — layout needs a dedicated tweak.
+- Premier markup detected as **1.0** — check that workbook’s markup sheet.
+- HW_2025 and FN Chair imported large matrices — spot-check species pairing on the floor.
+- Local DB (`master_pricebook.db`) is **not** on GitHub (gitignored).
+
+## Resume prompt
 
 ```
 Continue FAF Pricebook at ~/FAF-pricebook.
-Read CONTINUE.md and README.md. Pick up where we left off (GitHub publish / batch load / whatever I ask).
+Repo: https://github.com/Koffeekinggamer/faf-pricebook-system
+Master DB already loaded. Next: [your ask].
 ```
-
-## Important paths
-
-| What | Where |
-|------|--------|
-| Code | `~/FAF-pricebook` |
-| Local price DB | `~/FAF-pricebook/master_pricebook.db` (not in git) |
-| Layout study | `LAYOUT_SYSTEM.md` |
-| Prompt library | `PROMPTS.md` |
-| SSH public key | `~/.ssh/id_ed25519.pub` |
