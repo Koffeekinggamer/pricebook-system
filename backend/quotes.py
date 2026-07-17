@@ -513,7 +513,10 @@ class QuoteRepository:
             pdf,
             0,
             5,
-            "Foothills Amish Furniture — prices subject to change. Thank you for your business.",
+            _pdf_safe(
+                "Foothills Amish Furniture - prices subject to change. "
+                "Thank you for your business."
+            ),
             ln=True,
         )
 
