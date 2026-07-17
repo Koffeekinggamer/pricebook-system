@@ -350,7 +350,6 @@ with tab_search:
                 "collection",
                 "species",
                 "finish_state",
-                "dimensions",
                 "adjusted_price",
             ]
             if c in display.columns
@@ -363,7 +362,6 @@ with tab_search:
                 "collection": "Collection",
                 "species": "Wood / option",
                 "finish_state": "Finish",
-                "dimensions": "Dims",
                 "adjusted_price": "RETAIL",
             }
         )
