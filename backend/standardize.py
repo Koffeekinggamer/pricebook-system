@@ -73,7 +73,9 @@ _WOOD_PHRASES = [
     "Brown Soft Maple", "Rustic Brown Maple", "Rustic Hard Maple",
     "Rustic White Oak", "Rustic Red Oak", "Rustic QSWO", "Rustic Cherry",
     "Rustic Walnut", "Rustic Hickory", "Rustic Maple",
-    "QS White Oak", "White Qtrsawn", "Quarter Sawn White Oak",
+    "Character White Oak", "Character Hickory", "Character Cherry",
+    "Character Walnut", "Character QSWO", "Character Maple",
+    "Plain White Oak", "QS White Oak", "White Qtrsawn", "Quarter Sawn White Oak",
     "Rough Sawn Wormy Maple", "Rough Sawn White Oak", "Rough Sawn Maple",
     "Wormy Maple", "Soft Maple", "Hard Maple", "Brown Maple", "Sap Cherry",
     "Red Oak", "White Oak", "QSWO", "PSWO",
@@ -106,6 +108,13 @@ _WOOD_ABBREV = [
     (re.compile(r"(?i)\bwhite\s*oak\b"), "White Oak"),
     (re.compile(r"(?i)\bstain\s*maple\b"), "Stain Maple"),
     (re.compile(r"(?i)\brustic\s*ch\b"), "Rustic Cherry"),
+    (re.compile(r"(?i)\bcharacter\s*cherry\b"), "Character Cherry"),
+    (re.compile(r"(?i)\bcharacter\s*hickory\b"), "Character Hickory"),
+    (re.compile(r"(?i)\bcharacter\s*walnut\b"), "Character Walnut"),
+    (re.compile(r"(?i)\bcharacter\s*qsw[o0]\b"), "Character QSWO"),
+    (re.compile(r"(?i)\bcharacter\s*white\s*oak\b"), "Character White Oak"),
+    (re.compile(r"(?i)\bplain\s*white\s*oak\b"), "Plain White Oak"),
+    (re.compile(r"(?i)\brrs\.?\s*maple\b"), "Rough Sawn Maple"),
 ]
 
 
@@ -210,7 +219,8 @@ def standardize_species(val: Any) -> Optional[str]:
     """Canonical species / color / fabric option label, or None if junk."""
     if val is None:
         return None
-    raw = str(val).strip()
+    # Reuse quote/dash normalization from standardize_text
+    raw = standardize_text(val) or ""
     if not raw or raw.lower() in {"nan", "none", "null", "-"}:
         return None
 
@@ -421,8 +431,49 @@ def standardize_text(val: Any) -> Optional[str]:
     s = str(val).strip()
     if not s or s.lower() in {"nan", "none", "null"}:
         return None
+    # Normalize curly quotes / fancy dashes so matrix twins collapse
+    s = (
+        s.replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+        .replace("\u00a0", " ")
+    )
     s = re.sub(r"\s+", " ", s)
     return s
+
+
+# SKU-like tokens often land in description when id_col was missed
+_SKU_LIKE_RE = re.compile(
+    r"""(?ix)
+    ^(
+        [A-Z]{1,4}-[A-Z0-9][A-Z0-9\-_/.]{1,24}   # LA-ASH-3067-EX, GO-AVNNS, SU-BT10
+      | [A-Z]{2,6}\d{2,}[A-Z0-9\-]*               # VECG, HW123, BB-GR-33
+      | \d{3,6}                                   # short numeric item codes
+    )$
+    """
+)
+
+_JUNK_PART_RE = re.compile(
+    r"(?i)^(item\s*\#?|description|price|unf|finished|all|none|nan|null|"
+    r"new(\s*product|\s*items?)?|"
+    r"new\s+(january|february|march|april|may|june|july|august|"
+    r"september|october|november|december)(\s+\d{4})?)$"
+)
+
+
+def looks_like_sku(val: Any) -> bool:
+    s = standardize_text(val)
+    if not s or len(s) > 36:
+        return False
+    if _JUNK_PART_RE.match(s):
+        return False
+    # multi-word product names are not SKUs
+    if " " in s and not re.match(r"(?i)^[A-Z0-9][A-Z0-9\-_/.]+$", s):
+        return False
+    return bool(_SKU_LIKE_RE.match(s))
 
 
 def standardize_part(val: Any) -> Optional[str]:
@@ -430,7 +481,7 @@ def standardize_part(val: Any) -> Optional[str]:
     if not s:
         return None
     # drop pure junk parts
-    if re.match(r"(?i)^(item\s*#|description|price|unf|finished)$", s):
+    if _JUNK_PART_RE.match(s):
         return None
     return s
 
@@ -560,7 +611,13 @@ def standardize_row(row: dict, *, default_multiplier: float = 2.7) -> Optional[d
     vendor = standardize_vendor(out.get("vendor"))
     part = standardize_part(out.get("part_number"))
     desc = standardize_text(out.get("description"))
+    dims = standardize_text(out.get("dimensions"))
     raw_species = out.get("species")
+
+    # Promote SKU-like description into part_number when id column was missed
+    if not part and desc and looks_like_sku(desc):
+        part = standardize_part(desc)
+        desc = None
 
     # Drop unrecoverable junk-species rows that have no usable identity
     if is_junk_species_row(raw_species) and not part and not desc:
@@ -570,6 +627,12 @@ def standardize_row(row: dict, *, default_multiplier: float = 2.7) -> Optional[d
     # If species was pure junk col_N, drop the whole row (bad matrix columns)
     if is_junk_species_row(raw_species) and species is None:
         return None
+
+    # Species that is really dimensions / page numbers (e.g. "33 / 10")
+    if species and re.fullmatch(r"[\d./\s×xX\-]+", species):
+        if not dims:
+            dims = species
+        species = None
 
     finish = standardize_finish(out.get("finish_state"))
     # If finish embedded in old species label and finish empty
@@ -600,10 +663,12 @@ def standardize_row(row: dict, *, default_multiplier: float = 2.7) -> Optional[d
     collection = standardize_collection(
         out.get("collection"), vendor=vendor or ""
     )
+    # Drop sheet debris used as collection
+    if collection and re.fullmatch(r"(?i)(price|sheet\d*|retail|wholesale)", collection):
+        collection = None
     # If still empty, apply vendor default
     if not collection and vendor in _VENDOR_DEFAULT_COLLECTION:
         collection = _VENDOR_DEFAULT_COLLECTION[vendor]
-    dims = standardize_text(out.get("dimensions"))
     option_key = standardize_text(out.get("option_key"))
     notes = standardize_text(out.get("notes"))
     unit = standardize_text(out.get("unit"))
@@ -622,6 +687,14 @@ def standardize_row(row: dict, *, default_multiplier: float = 2.7) -> Optional[d
     if base_f is None or base_f <= 0:
         return None
     if not part and not desc:
+        return None
+    # Drop section banners that landed as product rows
+    if desc and re.match(
+        r"(?i)^new(\s*product|\s*items?)?$|"
+        r"(?i)^new\s+(january|february|march|april|may|june|july|august|"
+        r"september|october|november|december)\b",
+        desc,
+    ):
         return None
 
     mult = out.get("multiplier")

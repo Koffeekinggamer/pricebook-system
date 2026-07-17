@@ -1,7 +1,7 @@
 """
 Price Book System — Streamlit UI (full product)
 
-Tabs: Search · Drop files · Batch · Vendors · Admin
+Tabs: Search · Drop files · Vendors · Admin
 All logic via backend.PriceBookService
 
 Run:  streamlit run pricebook_app.py
@@ -11,18 +11,15 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
 import pandas as pd
 import streamlit as st
 
 from backend import PriceBookService
 from backend.auth import check_login, credentials_source_hint
-from backend.config import DEFAULT_MULTIPLIER
+from backend.config import DEFAULT_MULTIPLIER, DEFAULT_SEARCH_LIMIT
 
 st.set_page_config(
     page_title="FAF Price Book",
-    page_icon="🔥",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -40,7 +37,7 @@ def _require_login() -> bool:
     st.markdown(
         """
         <div style="max-width:420px;margin:4rem auto 1rem auto;text-align:center;">
-          <div style="font-size:2rem;font-weight:700;color:#2d4a30;">🔥 FAF Price Book</div>
+          <div style="font-size:2rem;font-weight:700;color:#2d4a30;">FAF Price Book</div>
           <div style="color:#555;margin-top:0.25rem;">Foothills Amish Furniture · sign in to continue</div>
         </div>
         """,
@@ -169,7 +166,7 @@ def render_commit(rows: list[dict], source_name: str, vendor_hint: str = "") -> 
     st.caption(
         "Policy: **one builder = one vendor**. Re-importing Premier replaces all Premier rows."
     )
-    if st.button("➕ Commit to master", type="primary", key=f"go_{source_name}"):
+    if st.button("Commit to master", type="primary", key=f"go_{source_name}"):
         result = svc.add_rows(rows, mode=mode)
         vend = vendor_hint or (rows[0].get("vendor") if rows else "")
         if vend and rows:
@@ -182,15 +179,13 @@ def render_commit(rows: list[dict], source_name: str, vendor_hint: str = "") -> 
             f"in {result.get('inserted', 0):,} · up {result.get('updated', 0):,} · "
             f"del {result.get('deleted', 0):,}"
         )
-        st.balloons()
 
 
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 
-st.sidebar.title("🔥 FAF Price Book")
-st.sidebar.caption("Foothills Amish Furniture")
+st.sidebar.title("FAF Price Book")
 who = st.session_state.get("auth_user") or "user"
 st.sidebar.caption(f"Signed in as **{who}**")
 if st.sidebar.button("Sign out"):
@@ -204,66 +199,32 @@ st.sidebar.caption(
     f"{stats['vendors']} vendors · {stats['collections']} collections"
 )
 
-st.sidebar.caption(
-    "Multipliers: set per builder on the **Vendors** tab "
-    f"(default for new imports: {DEFAULT_MULTIPLIER:g})."
-)
-
-st.sidebar.divider()
-if st.sidebar.button("Recompute ALL retail from Vendors mults"):
-    total = 0
-    for v in svc.list_vendors():
-        m = svc.get_vendor_multiplier(v, default=DEFAULT_MULTIPLIER)
-        total += int(svc.reapply_multiplier(float(m), vendor=v) or 0)
-    st.sidebar.success(f"Updated {total:,} rows from each builder’s mult")
-
-if st.sidebar.button("💾 Backup price book DB"):
-    import subprocess
-    import sys
-
-    script = Path(__file__).resolve().parent / "scripts" / "backup_db.py"
-    rc = subprocess.call([sys.executable, str(script)])
-    if rc == 0:
-        st.sidebar.success("Saved → Documents/FAF-pricebook-backups")
-    else:
-        st.sidebar.error("Backup failed — see terminal")
-st.sidebar.caption(f"Last backup: {_last_backup_hint()}")
-
 # ---------------------------------------------------------------------------
 # Home dashboard strip
 # ---------------------------------------------------------------------------
 
-vsum = svc.vendor_summary()
-top_vendors = ""
-if not vsum.empty:
-    top = vsum.head(3)
-    top_vendors = " · ".join(
-        f"{r['vendor']} ({int(r['rows']):,})" for _, r in top.iterrows()
-    )
-
-d1, d2, d3 = st.columns(3)
+d1, d2, d3 = st.columns([1, 1, 2.2])
 d1.metric("Price rows", f"{stats['rows']:,}")
 d2.metric("Builders", f"{stats['vendors']}")
-d3.metric(
-    "Last backup",
-    _last_backup_hint().split("·")[-1].strip()
-    if "·" in _last_backup_hint()
-    else _last_backup_hint(),
-)
-if top_vendors:
-    st.caption(f"Largest books: {top_vendors}")
+with d3:
+    # metric() truncates long labels; plain text shows the full store name
+    st.caption("Store")
+    st.markdown(
+        "<div style='font-size:1.35rem;font-weight:600;line-height:1.3;"
+        "color:inherit;padding-top:0.15rem;'>Foothills Amish Furniture</div>",
+        unsafe_allow_html=True,
+    )
 
 # ===========================================================================
 # TABS
 # ===========================================================================
 
-tab_search, tab_import, tab_batch, tab_vendors, tab_admin = st.tabs(
+tab_search, tab_import, tab_vendors, tab_admin = st.tabs(
     [
-        "🔎 Search",
-        "📥 Drop files",
-        "📁 Batch folder",
-        "🏭 Vendors",
-        "⚙️ Admin",
+        "Search",
+        "Drop files",
+        "Vendors",
+        "Admin",
     ]
 )
 
@@ -285,33 +246,43 @@ with tab_search:
     )
 
     vendors = ["All"] + svc.list_vendors()
-    f1, f2, f3, f4 = st.columns([1.3, 1.5, 1.2, 0.8])
+    f1, f2, f3 = st.columns([1.3, 1.5, 1.2])
     with f1:
         vf = st.selectbox("Builder", vendors, key="sv")
     with f2:
         coll_src = svc.list_collections(vendor=None if vf == "All" else vf)
         collections = ["All"] + coll_src
+        # Changing builder invalidates collection options — reset to All to avoid
+        # Streamlit "value not in options" crash.
+        if st.session_state.get("_search_coll_builder") != vf:
+            st.session_state["sc"] = "All"
+            st.session_state["_search_coll_builder"] = vf
+        elif st.session_state.get("sc") not in collections:
+            st.session_state["sc"] = "All"
         cf = st.selectbox("Collection", collections, key="sc")
     with f3:
         # Floor default: finished only
         finish_opts = ["finished", "All", "unfinished"]
         ff = st.selectbox("Finish", finish_opts, index=0, key="sf")
-    with f4:
-        lim = st.number_input("Max rows", 50, 5000, 150, 50, key="sl")
 
     # Don't dump the whole book when search is empty — unless a builder is chosen
     if not (q or "").strip() and vf == "All":
         results = pd.DataFrame()
         empty_reason = "type"
     else:
-        results = svc.search(
-            q,
-            vendor=None if vf == "All" else vf,
-            collection=None if cf == "All" else cf,
-            finish_state=None if ff == "All" else ff,
-            limit=int(lim),
-        )
-        empty_reason = "none" if results.empty else ""
+        try:
+            results = svc.search(
+                q,
+                vendor=None if vf == "All" else vf,
+                collection=None if cf == "All" else cf,
+                finish_state=None if ff == "All" else ff,
+                limit=DEFAULT_SEARCH_LIMIT,
+            )
+            empty_reason = "none" if results.empty else ""
+        except Exception as exc:
+            results = pd.DataFrame()
+            empty_reason = "error"
+            st.error(f"Search failed: {exc}")
     display = results.copy()
 
     # Floor table emphasizes RETAIL
@@ -320,16 +291,22 @@ with tab_search:
             st.info(
                 "Type a part number or product words above — or pick a **Builder** to browse."
             )
+        elif empty_reason == "error":
+            pass  # error already shown
         else:
             st.info(
                 "No hits — try fewer words, or check **Builder** / **Finish** filters."
             )
     else:
+        hit_note = f"**{len(display):,}** hits"
+        if len(display) >= DEFAULT_SEARCH_LIMIT:
+            hit_note += f" (showing first {DEFAULT_SEARCH_LIMIT})"
         st.markdown(
-            f"**{len(display):,}** hits · "
+            f"{hit_note} · "
             f"<span style='color:#2d4a30;font-weight:700'>Retail is what the customer pays</span>",
             unsafe_allow_html=True,
         )
+        # Floor view: retail only (wholesale/mult managed on Vendors tab)
         show_cols = [
             c
             for c in [
@@ -340,8 +317,6 @@ with tab_search:
                 "species",
                 "finish_state",
                 "dimensions",
-                "base_price",
-                "multiplier",
                 "adjusted_price",
             ]
             if c in display.columns
@@ -355,8 +330,6 @@ with tab_search:
                 "species": "Wood / option",
                 "finish_state": "Finish",
                 "dimensions": "Dims",
-                "base_price": "Wholesale",
-                "multiplier": "Mult",
                 "adjusted_price": "RETAIL",
             }
         )
@@ -365,39 +338,12 @@ with tab_search:
             use_container_width=True,
             hide_index=True,
             column_config={
-                "Wholesale": st.column_config.NumberColumn(format="$%.2f"),
                 "RETAIL": st.column_config.NumberColumn(
                     "RETAIL", format="$%.2f", help="Customer price"
                 ),
-                "Mult": st.column_config.NumberColumn(format="%.2f"),
             },
             height=480,
         )
-
-        stamp = datetime.now().strftime("%Y%m%d_%H%M")
-        e1, e2, e3 = st.columns(3)
-        export_df = display.drop(columns=["id"], errors="ignore")
-        with e1:
-            st.download_button(
-                "⬇️ Excel",
-                svc.export_excel(export_df),
-                f"pricebook_{stamp}.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-        with e2:
-            st.download_button(
-                "⬇️ CSV",
-                svc.export_csv(export_df),
-                f"pricebook_{stamp}.csv",
-                "text/csv",
-            )
-        with e3:
-            pdf = svc.export_pdf(display.head(200), "FAF Price Book Export")
-            st.download_button(
-                "⬇️ PDF (200)",
-                pdf,
-                f"pricebook_{stamp}.pdf" if pdf[:4] == b"%PDF" else f"pricebook_{stamp}.txt",
-            )
 
 # ---------------------------------------------------------------------------
 # IMPORT — multi-file drop with per-builder multiplier
@@ -425,7 +371,6 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
         help="You can select multiple files at once.",
     )
 
-    # Always replace each builder’s catalog (one builder = one book)
     commit_mode = "replace_vendor"
     prefer_wb_markup = st.checkbox(
         "Prefer workbook Markup sheet when mult not set manually",
@@ -434,38 +379,109 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
         help="If unchecked, uses each builder’s saved mult, else 2.7 (Genuine Oak usually 1.7 saved).",
     )
 
+    def _clear_drop_widget_state() -> None:
+        for k in list(st.session_state.keys()):
+            if isinstance(k, str) and (
+                k.startswith("drop_vend_")
+                or k.startswith("drop_mult_")
+                or k.startswith("drop_wb_")
+                or k.startswith("m27_")
+                or k.startswith("m17_")
+            ):
+                del st.session_state[k]
+
+    def _apply_vendor_mult(rows: list, vendor: str, mult: float, source: str) -> list:
+        """Return deep-copied rows with vendor/mult/retail applied (never mutate cache)."""
+        out = []
+        for src in rows:
+            r = dict(src)
+            r["vendor"] = vendor
+            r["source_file"] = source
+            r["multiplier"] = mult
+            bp = r.get("base_price")
+            if bp is not None:
+                try:
+                    r["adjusted_price"] = round(float(bp) * mult, 2)
+                except (TypeError, ValueError):
+                    pass
+            out.append(r)
+        return out
+
+    # Flash message after load (survives rerun so sidebar stats refresh)
+    if st.session_state.get("drop_load_msg"):
+        st.success(st.session_state.pop("drop_load_msg"))
+        log = st.session_state.pop("drop_load_log", None)
+        if log:
+            st.dataframe(pd.DataFrame(log), use_container_width=True, hide_index=True)
+
     if not uploads:
         st.info("Drop one or more builder price files above to begin.")
     else:
-        # Parse once per unique filename into session so mult edits re-render cleanly
-        file_keys = (tuple(sorted(f.name for f in uploads)), bool(prefer_wb_markup))
+        # Signature: names + sizes + markup preference. Index keys stay stable while
+        # this set is unchanged. Do not use filename as widget key (special chars).
+        upload_sig = (
+            tuple((f.name, int(getattr(f, "size", 0) or 0)) for f in uploads),
+            bool(prefer_wb_markup),
+        )
         cache_key = "drop_parse_cache"
-        if (
-            cache_key not in st.session_state
-            or st.session_state.get("drop_file_keys") != file_keys
-        ):
-            parsed = {}
+
+        if st.session_state.get("drop_file_keys") != upload_sig:
+            _clear_drop_widget_state()
+            parsed: list[dict] = []
             progress = st.progress(0.0, text="Reading files…")
+            n_up = max(len(uploads), 1)
             for i, up in enumerate(uploads):
-                progress.progress(
-                    (i) / max(len(uploads), 1),
-                    text=f"Parsing {up.name}…",
+                progress.progress(i / n_up, text=f"Parsing {up.name}…")
+                try:
+                    data = _bytes(up)
+                    prepared = svc.prepare_drop_file(
+                        data,
+                        filename=up.name,
+                        vendor="",
+                        multiplier=None,
+                        use_workbook_markup=prefer_wb_markup,
+                    )
+                except Exception as exc:
+                    prepared = {
+                        "filename": up.name,
+                        "vendor": Path(up.name).stem,
+                        "multiplier": float(DEFAULT_MULTIPLIER),
+                        "detected_markup": None,
+                        "rows": [],
+                        "notes": "",
+                        "error": f"Parse failed: {exc}"[:400],
+                        "row_count": 0,
+                        "kind": "pdf"
+                        if up.name.lower().endswith(".pdf")
+                        else "excel",
+                    }
+                # Keep only what we need; never store raw bytes in session
+                parsed.append(
+                    {
+                        "filename": up.name,
+                        "vendor": prepared.get("vendor") or Path(up.name).stem,
+                        "multiplier": float(
+                            prepared.get("multiplier") or DEFAULT_MULTIPLIER
+                        ),
+                        "detected_markup": prepared.get("detected_markup"),
+                        "rows": list(prepared.get("rows") or []),
+                        "notes": prepared.get("notes") or "",
+                        "error": prepared.get("error") or "",
+                        "row_count": int(prepared.get("row_count") or 0),
+                        "kind": prepared.get("kind") or "excel",
+                    }
                 )
-                data = _bytes(up)
-                prepared = svc.prepare_drop_file(
-                    data,
-                    filename=up.name,
-                    vendor="",
-                    multiplier=None,
-                    use_workbook_markup=prefer_wb_markup,
-                )
-                prepared["_bytes"] = data
-                parsed[up.name] = prepared
             progress.progress(1.0, text="Done parsing")
             st.session_state[cache_key] = parsed
-            st.session_state["drop_file_keys"] = file_keys
+            st.session_state["drop_file_keys"] = upload_sig
 
-        parsed_map: dict = st.session_state.get(cache_key, {})
+        parsed_list: list = st.session_state.get(cache_key) or []
+        # Align list length with current uploads if cache is stale/partial
+        if len(parsed_list) != len(uploads):
+            st.session_state.pop(cache_key, None)
+            st.session_state.pop("drop_file_keys", None)
+            st.warning("Parse cache out of sync — re-reading files…")
+            st.rerun()
 
         st.markdown("### Per-file builder & multiplier")
         st.caption(
@@ -473,37 +489,47 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
             "Example: Genuine Oak **1.7**, most others **2.7**."
         )
 
-        ready_payloads = []  # list of {vendor, mult, rows, filename}
+        ready_payloads = []
 
-        for up in uploads:
+        for i, up in enumerate(uploads):
+            prep = parsed_list[i] if i < len(parsed_list) else {}
             name = up.name
-            prep = parsed_map.get(name) or {}
+            default_vend = (prep.get("vendor") or Path(name).stem).strip()
+            saved = svc.get_vendor_multiplier(
+                default_vend, default=float(DEFAULT_MULTIPLIER)
+            )
+            default_mult = float(
+                prep.get("multiplier") or saved or DEFAULT_MULTIPLIER
+            )
+
+            vend_key = f"drop_vend_{i}"
+            mult_key = f"drop_mult_{i}"
+            # Init session defaults once — never pass value= with an existing key
+            if vend_key not in st.session_state:
+                st.session_state[vend_key] = default_vend
+            if mult_key not in st.session_state:
+                st.session_state[mult_key] = float(default_mult)
+
             with st.container(border=True):
                 h1, h2 = st.columns([2, 1])
                 with h1:
-                    st.markdown(f"**📄 {name}**")
+                    st.markdown(f"**{name}**")
                     if prep.get("error") and not prep.get("row_count"):
-                        st.error(prep["error"])
+                        st.error(str(prep["error"]))
                     elif prep.get("notes"):
-                        st.caption(prep.get("notes", "")[:200])
+                        st.caption(str(prep.get("notes", ""))[:200])
                 with h2:
                     kind = (prep.get("kind") or "excel").upper()
-                    st.metric("Parsed rows", f"{int(prep.get('row_count') or 0):,}")
+                    st.metric(
+                        "Parsed rows", f"{int(prep.get('row_count') or 0):,}"
+                    )
                     st.caption(kind)
 
                 c1, c2, c3 = st.columns([1.6, 1.0, 1.0])
-                default_vend = prep.get("vendor") or Path(name).stem
-                # Saved mult for this builder, else parsed default
-                saved = svc.get_vendor_multiplier(
-                    default_vend, default=float(DEFAULT_MULTIPLIER)
-                )
-                default_mult = float(prep.get("multiplier") or saved or DEFAULT_MULTIPLIER)
-
                 with c1:
                     vend_edit = st.text_input(
                         "Builder name",
-                        value=default_vend,
-                        key=f"drop_vend_{name}",
+                        key=vend_key,
                         help="One catalog per builder name",
                     )
                 with c2:
@@ -511,50 +537,46 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
                         "Multiplier for this builder",
                         min_value=0.1,
                         max_value=20.0,
-                        value=float(default_mult),
                         step=0.1,
-                        key=f"drop_mult_{name}",
+                        key=mult_key,
                         help="Retail = wholesale × this number",
                     )
                 with c3:
                     detected = prep.get("detected_markup")
-                    if detected:
-                        st.caption(f"Workbook markup sheet: **{detected:g}**")
+                    if detected is not None:
+                        try:
+                            det_f = float(detected)
+                        except (TypeError, ValueError):
+                            det_f = None
+                    else:
+                        det_f = None
+                    if det_f is not None:
+                        st.caption(f"Workbook markup sheet: **{det_f:g}**")
                         if st.button(
-                            f"Use workbook {detected:g}",
-                            key=f"drop_wb_{name}",
+                            f"Use workbook {det_f:g}",
+                            key=f"drop_wb_{i}",
                         ):
-                            st.session_state[f"drop_mult_{name}"] = float(detected)
+                            st.session_state[mult_key] = float(det_f)
                             st.rerun()
                     else:
                         st.caption("No markup sheet found")
-                    # Suggest common mults
                     b_a, b_b = st.columns(2)
                     with b_a:
-                        if st.button("2.7", key=f"m27_{name}"):
-                            st.session_state[f"drop_mult_{name}"] = 2.7
+                        if st.button("2.7", key=f"m27_{i}"):
+                            st.session_state[mult_key] = 2.7
                             st.rerun()
                     with b_b:
-                        if st.button("1.7", key=f"m17_{name}"):
-                            st.session_state[f"drop_mult_{name}"] = 1.7
+                        if st.button("1.7", key=f"m17_{i}"):
+                            st.session_state[mult_key] = 1.7
                             st.rerun()
 
-                # Re-apply mult + vendor on rows for this file
-                rows = list(prep.get("rows") or [])
                 vend_final = (vend_edit or default_vend).strip()
                 mult_final = float(mult_edit)
-                for r in rows:
-                    r["vendor"] = vend_final
-                    r["source_file"] = name
-                    r["multiplier"] = mult_final
-                    bp = r.get("base_price")
-                    if bp is not None:
-                        try:
-                            r["adjusted_price"] = round(float(bp) * mult_final, 2)
-                        except (TypeError, ValueError):
-                            pass
+                cached_rows = list(prep.get("rows") or [])
+                rows = _apply_vendor_mult(
+                    cached_rows, vend_final, mult_final, name
+                )
 
-                # Sample retail after mult
                 if rows:
                     sample = pd.DataFrame(rows[:6])
                     show = [
@@ -584,12 +606,15 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
                         use_container_width=True,
                         hide_index=True,
                         column_config={
-                            "Wholesale": st.column_config.NumberColumn(format="$%.2f"),
-                            "RETAIL": st.column_config.NumberColumn(format="$%.2f"),
+                            "Wholesale": st.column_config.NumberColumn(
+                                format="$%.2f"
+                            ),
+                            "RETAIL": st.column_config.NumberColumn(
+                                format="$%.2f"
+                            ),
                             "Mult": st.column_config.NumberColumn(format="%.2f"),
                         },
                     )
-                    # Retail range hint
                     try:
                         rets = [
                             float(r["adjusted_price"])
@@ -598,7 +623,7 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
                         ]
                         if rets:
                             st.caption(
-                                f"Retail range after ×{mult_final:g}: "
+                                f"Retail range after x{mult_final:g}: "
                                 f"**${min(rets):,.2f}** – **${max(rets):,.2f}** · "
                                 f"{len(rows):,} sellable rows"
                             )
@@ -614,14 +639,15 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
                         }
                     )
                 elif prep.get("error"):
-                    st.warning("This file will be skipped until it parses cleanly.")
+                    st.warning(
+                        "This file will be skipped until it parses cleanly."
+                    )
 
         st.divider()
         st.markdown("### Load into master price book")
         if not ready_payloads:
             st.warning("No files with parsed rows yet.")
         else:
-            # Collapse duplicate builders in the same drop (last file wins)
             by_vendor: dict = {}
             for p in ready_payloads:
                 by_vendor[p["vendor"]] = p
@@ -656,9 +682,10 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
             )
 
             if st.button(
-                f"🚀 Standardize & load {len(by_vendor)} builder(s) into master",
+                f"Standardize & load {len(by_vendor)} builder(s) into master",
                 type="primary",
                 use_container_width=True,
+                key="drop_load_master",
             ):
                 results_log = []
                 bar = st.progress(0.0, text="Loading…")
@@ -668,147 +695,59 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
                         i / max(len(items), 1),
                         text=f"Loading {p['vendor']}…",
                     )
-                    result = svc.add_rows(p["rows"], mode=commit_mode)
-                    svc.set_vendor_multiplier(
-                        p["vendor"],
-                        float(p["multiplier"]),
-                        notes=f"Set from drop import of {p['filename']}",
-                    )
-                    # Ensure retail matches saved mult
-                    svc.reapply_multiplier(
-                        float(p["multiplier"]), vendor=p["vendor"]
-                    )
-                    results_log.append(
-                        {
-                            "Builder": p["vendor"],
-                            "File": p["filename"],
-                            "Mult": p["multiplier"],
-                            "Inserted": result.get("inserted", 0),
-                            "Updated": result.get("updated", 0),
-                            "Removed old": result.get("deleted", 0),
-                            "Total": result.get("total", 0),
-                        }
-                    )
+                    try:
+                        result = svc.add_rows(p["rows"], mode=commit_mode)
+                        svc.set_vendor_multiplier(
+                            p["vendor"],
+                            float(p["multiplier"]),
+                            notes=f"Set from drop import of {p['filename']}",
+                        )
+                        svc.reapply_multiplier(
+                            float(p["multiplier"]), vendor=p["vendor"]
+                        )
+                        results_log.append(
+                            {
+                                "Builder": p["vendor"],
+                                "File": p["filename"],
+                                "Mult": p["multiplier"],
+                                "Inserted": result.get("inserted", 0),
+                                "Updated": result.get("updated", 0),
+                                "Removed old": result.get("deleted", 0),
+                                "Total": result.get("total", 0),
+                                "Status": "ok",
+                            }
+                        )
+                    except Exception as exc:
+                        results_log.append(
+                            {
+                                "Builder": p["vendor"],
+                                "File": p["filename"],
+                                "Mult": p["multiplier"],
+                                "Inserted": 0,
+                                "Updated": 0,
+                                "Removed old": 0,
+                                "Total": 0,
+                                "Status": f"error: {exc}"[:120],
+                            }
+                        )
                 bar.progress(1.0, text="Done")
-                st.success(
-                    f"Loaded **{len(items)}** builder(s). "
-                    f"Master now has **{svc.row_count():,}** rows."
-                )
-                st.dataframe(
-                    pd.DataFrame(results_log),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-                st.balloons()
-                # Clear parse cache so a re-drop re-reads
+                ok_n = sum(1 for r in results_log if r.get("Status") == "ok")
                 st.session_state.pop(cache_key, None)
                 st.session_state.pop("drop_file_keys", None)
-
-# ---------------------------------------------------------------------------
-# BATCH
-# ---------------------------------------------------------------------------
-with tab_batch:
-    st.subheader("Batch import a folder of price lists")
-    st.caption(
-        "Excel preferred. Default mode **replaces each builder** (one catalog per builder). "
-        "Builder name is derived from the filename."
-    )
-
-    default_folder = str(
-        Path.home()
-        / "Documents"
-        / "Judson's old mac book pro"
-        / "Downloads"
-        / "Builder Updates 07172025"
-        / "Ready for Web Upload"
-        / "Completed Excel Pricebooks"
-    )
-    folder = st.text_input("Folder path", value=default_folder, key="bf")
-    b1, b2, b3 = st.columns(3)
-    with b1:
-        recursive = st.checkbox("Recursive", value=False)
-    with b2:
-        excel_only = st.checkbox("Excel only (skip PDF)", value=True)
-    with b3:
-        use_markup = st.checkbox("Use workbook markup sheets", value=True)
-    mode = st.selectbox(
-        "Mode",
-        ["replace_vendor", "upsert", "append"],
-        format_func=lambda m: {
-            "replace_vendor": "Replace each builder (recommended — no duplicates)",
-            "upsert": "Upsert only",
-            "append": "Append (not recommended)",
-        }[m],
-        key="bm",
-        index=0,
-    )
-    st.caption(
-        "Batch maps filenames to **one name per builder** (e.g. MWS 2023 + Millers 2026 → "
-        "Millers Woodshop only). Only one file per builder is imported."
-    )
-    vend_over = st.text_input("Force one vendor name for all (optional)", key="bvo")
-
-    if st.button("Scan folder"):
-        paths = svc.discover_batch_files(folder, recursive=recursive)
-        if excel_only:
-            paths = [p for p in paths if p.suffix.lower() in {".xlsx", ".xls", ".xlsm"}]
-        st.write(f"**{len(paths)}** files found")
-        st.code("\n".join(p.name for p in paths[:80]) or "(none)")
-
-    if st.button("🚀 Run batch import", type="primary"):
-        if not Path(folder).is_dir():
-            st.error("Folder not found.")
-        else:
-            prog = st.progress(0.0, text="Starting…")
-            status = st.empty()
-
-            def on_prog(msg: str):
-                status.caption(msg)
-
-            with st.spinner("Batch importing…"):
-                result = svc.batch_import(
-                    folder,
-                    recursive=recursive,
-                    mode=mode,
-                    multiplier=float(DEFAULT_MULTIPLIER),
-                    use_workbook_markup=use_markup,
-                    vendor_override=vend_over.strip(),
-                    excel_only=excel_only,
-                    progress=on_prog,
+                _clear_drop_widget_state()
+                st.session_state["drop_load_msg"] = (
+                    f"Loaded **{ok_n}** of **{len(items)}** builder(s). "
+                    f"Master now has **{svc.row_count():,}** rows."
                 )
-            prog.progress(1.0, text="Done")
-            rows = [
-                {
-                    "file": Path(f.path).name,
-                    "vendor": f.vendor,
-                    "status": f.status,
-                    "inserted": f.inserted,
-                    "updated": f.updated,
-                    "total": f.total,
-                    "message": f.message,
-                }
-                for f in result.files
-            ]
-            st.dataframe(pd.DataFrame(rows), use_container_width=True)
-            st.success(
-                f"{result.ok_count} ok · {result.error_count} errors · "
-                f"{result.rows_total:,} rows written · master now {svc.row_count():,}"
-            )
+                st.session_state["drop_load_log"] = results_log
+                # Rerun so sidebar metrics reflect the new master row count
+                st.rerun()
 
 # ---------------------------------------------------------------------------
 # VENDORS — edit multipliers
 # ---------------------------------------------------------------------------
 with tab_vendors:
     st.subheader("Modify builder multipliers")
-    st.markdown(
-        """
-**Retail = wholesale × multiplier.**  
-Each builder has its own mult (e.g. Genuine Oak **1.7**, most others **2.7**).
-
-1. Edit the **Multiplier** column below  
-2. Click **Save multipliers & update retail prices**
-        """
-    )
 
     summary = svc.vendor_summary()
     if summary.empty:
@@ -823,8 +762,6 @@ Each builder has its own mult (e.g. Genuine Oak **1.7**, most others **2.7**).
                     "collections",
                     "saved_mult",
                     "avg_mult",
-                    "min_base",
-                    "max_base",
                 ]
                 if c in summary.columns
             ]
@@ -843,8 +780,6 @@ Each builder has its own mult (e.g. Genuine Oak **1.7**, most others **2.7**).
                 "vendor": "Builder",
                 "rows": "Items",
                 "collections": "Collections",
-                "min_base": "Min wholesale",
-                "max_base": "Max wholesale",
             }
         )
         show_cols = [
@@ -854,8 +789,6 @@ Each builder has its own mult (e.g. Genuine Oak **1.7**, most others **2.7**).
                 "Items",
                 "Collections",
                 "Multiplier",
-                "Min wholesale",
-                "Max wholesale",
             ]
             if c in edit_df.columns
         ]
@@ -879,12 +812,6 @@ Each builder has its own mult (e.g. Genuine Oak **1.7**, most others **2.7**).
                     help="Edit this — then click Save below",
                     disabled=False,
                 ),
-                "Min wholesale": st.column_config.NumberColumn(
-                    format="$%.0f", disabled=True
-                ),
-                "Max wholesale": st.column_config.NumberColumn(
-                    format="$%.0f", disabled=True
-                ),
             },
             key="vendor_mult_editor",
         )
@@ -897,7 +824,7 @@ Each builder has its own mult (e.g. Genuine Oak **1.7**, most others **2.7**).
         b1, b2, b3 = st.columns([1.4, 1.0, 1.0])
         with b1:
             if st.button(
-                "💾 Save multipliers & update retail prices",
+                "Save multipliers & update retail prices",
                 type="primary",
                 use_container_width=True,
             ):
@@ -982,7 +909,7 @@ with tab_admin:
     st.markdown("##### Maintenance")
     m1, m2, m3 = st.columns(3)
     with m1:
-        if st.button("💾 Backup DB now"):
+        if st.button("Backup DB now"):
             import subprocess
             import sys
 
@@ -990,7 +917,7 @@ with tab_admin:
             rc = subprocess.call([sys.executable, str(script)])
             st.success("Backup saved") if rc == 0 else st.error("Backup failed")
     with m2:
-        if st.button("✨ Re-standardize master"):
+        if st.button("Re-standardize master"):
             report = svc.standardize_master()
             st.write(report)
             st.success("Standardize complete")
@@ -1008,7 +935,7 @@ with tab_admin:
             report = svc.cleanup_duplicates(dry_run=True)
             st.write(report)
     with c2:
-        if st.button("⚠️ Execute cleanup", type="primary"):
+        if st.button("Execute cleanup", type="primary"):
             report = svc.cleanup_duplicates(dry_run=False)
             st.success(report)
 
@@ -1027,7 +954,6 @@ source ~/FAF-pricebook/.venv/bin/activate
 python -m backend.cli stats
 python -m backend.cli search "oak nightstand"
 python -m backend.cli import-xlsx FILE --vendor NAME --mode replace_vendor
-python -m backend.cli batch FOLDER --excel-only --mode replace_vendor
 python -m backend.cli backup-db
 python -m backend.cli standardize
         """.strip()

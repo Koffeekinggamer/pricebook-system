@@ -10,7 +10,7 @@ DB_PATH = APP_DIR / "master_pricebook.db"
 
 DEFAULT_MULTIPLIER = 2.7
 DEFAULT_PRICE_BASIS = "wholesale"
-DEFAULT_SEARCH_LIMIT = 500
+DEFAULT_SEARCH_LIMIT = 150
 
 # Shown on customer quote PDFs (edit to match the store)
 STORE = {
