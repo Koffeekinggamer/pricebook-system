@@ -1,22 +1,11 @@
-# FAF Pricebook — status
+# FAF Pricebook — LIVE
 
-**Updated:** 2026-07-16  
+**Updated:** 2026-07-17  
 **Folder:** `~/FAF-pricebook`  
-**GitHub (private):** https://github.com/Koffeekinggamer/faf-pricebook-system
+**GitHub (private):** https://github.com/Koffeekinggamer/faf-pricebook-system  
+**Status:** Master data cleaned · app ready · **~41,200 rows · 13 vendors**
 
-## Done
-
-| Item | Status |
-|------|--------|
-| Full app (Search · Import · Batch · Quotes · Vendors · Admin) | ✅ |
-| Backend + CLI | ✅ |
-| Git repo + push to GitHub | ✅ `main` → `Koffeekinggamer/faf-pricebook-system` |
-| Batch load Completed Excel Pricebooks | ✅ |
-| Genuine Oak Master import | ✅ |
-| Master DB populated | ✅ ~59,926 rows · 14 vendors · 243 collections |
-| Sample quote + PDF | ✅ |
-
-## Run
+## Run (production)
 
 ```bash
 cd ~/FAF-pricebook
@@ -24,29 +13,44 @@ source .venv/bin/activate
 streamlit run pricebook_app.py
 ```
 
-## Git (HTTPS works via GitHub Desktop credentials)
+Open **http://localhost:8501**
+
+CLI smoke:
 
 ```bash
-cd ~/FAF-pricebook
-git pull
-git add -A && git commit -m "your message"
-git push
+.venv/bin/python -m backend.cli stats
+.venv/bin/python -m backend.cli search "nightstand" --vendor "Genuine Oak"
+.venv/bin/python -m backend.cli vendors
 ```
 
-SSH key add to GitHub still optional (`Permission denied` until public key is on the account). HTTPS push is working.
+## Vendors
 
-## Notes / later polish
+| Vendor | Rows | Mult | Notes |
+|--------|------|------|-------|
+| Hope Wood | 14,933 | 2.7 | unfinished + finished × 5 woods |
+| Genuine Oak | 9,095 | **1.7** | workbook Markup sheet |
+| Millers Woodshop | 5,852 | 2.7 | 2026 only (MWS 2023 removed) |
+| Windy Acres Furniture | 3,504 | 2.7 | |
+| FN Chair | 3,067 | 2.7 | PL To Export; item name = SKU |
+| Rainbow Bedding | 1,540 | 2.7 | **Jan 2026 wholesale** bases |
+| Premier Woodcraft | 1,028 | 2.7 | wholesale under markup formulas |
+| Charleston Forge | 849 | 2.7 | |
+| LuxHome | 558 | 2.7 | fabric grades; AJ addon = identical skip |
+| Patio Kraft | 452 | 2.7 | color tiers Standard/Bright/Woodgrain |
+| Beaverdam | 143 | 2.7 | |
+| GVWI | 93 | 2.7 | |
+| LAMB | 86 | 2.7 | |
 
-- A few `.xls` files skipped (0 rows): LUXHOME WHOLESALE, AJ's LUxhome addon — may need manual map.
-- Patio Kraft only got 1 row — layout needs a dedicated tweak.
-- Premier markup detected as **1.0** — check that workbook’s markup sheet.
-- HW_2025 and FN Chair imported large matrices — spot-check species pairing on the floor.
-- Local DB (`master_pricebook.db`) is **not** on GitHub (gitignored).
+## Decisions locked in
+
+- **Rainbow Bedding** = Jan 2026 wholesale file (not the pre-marked Rainbow export).
+- **AJ’s LuxHome addon** = 100% same as wholesale book → not double-loaded.
+- **Genuine Oak** stays **1.7×** per builder Markup sheet.
+- **Local DB** gitignored (never on GitHub).
 
 ## Resume prompt
 
 ```
-Continue FAF Pricebook at ~/FAF-pricebook.
-Repo: https://github.com/Koffeekinggamer/faf-pricebook-system
-Master DB already loaded. Next: [your ask].
+Continue FAF Pricebook at ~/FAF-pricebook — live system.
+Next: [your ask].
 ```

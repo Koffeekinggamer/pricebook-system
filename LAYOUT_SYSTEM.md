@@ -101,7 +101,8 @@ Same data model as wide Excel — just harder to parse. Schrock’s Ashton page 
 
 | Type | Layout | Examples |
 |------|--------|----------|
-| Outdoor poly | Code · Description · Size · Std/WG price | Beaverdam, Patio Kraft, Luxcraft |
+| Outdoor poly (simple) | Code · Description · Size · Std/WG price | Beaverdam, Luxcraft |
+| Outdoor poly (Patio Kraft) | Multi-section **Item # · Description · color tiers** (Standard / Bright / Woodgrain; or Black / Poly / Woodgrain). Sheets: Retail + Wholesale. Prefer **Wholesale** as base; FAF mult on top. Parser: `import_patio_kraft_workbook` in `wide_import.py`. | Patio Kraft 2026 |
 | Tables by size×leaves | Size · Leaves · prices by wood | Berlin Anson, Salt Creek, Troyer Design |
 | Metal + top options | SKU · top option · standard/premium metal | Charleston Forge Digital |
 | Options only | % or $ adders | Custom size charts, two-tone, leather seats |

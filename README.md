@@ -7,10 +7,10 @@ Streamlit + SQLite. Default retail multiplier **2.7×** (adjustable per vendor).
 **Builders ship wide species matrices. We store long-form rows**  
 (one row = SKU × species tier × finish).
 
-> **Status:** Saved for later. See **CONTINUE.md** for resume steps.  
+> **Status:** LIVE — master data loaded (~41k rows, 13 vendors). See **CONTINUE.md**.  
 > **Folder:** `~/FAF-pricebook`  
-> **GitHub (when ready):** private repo `faf-pricebook-system` via Desktop Publish or SSH.  
-> Local `*.db` and `.venv` are gitignored.
+> **GitHub:** private repo `Koffeekinggamer/faf-pricebook-system`  
+> Local `*.db` and `.venv` are gitignored (price book stays on this machine).
 
 ## Quick start
 

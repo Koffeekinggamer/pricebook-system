@@ -29,7 +29,10 @@ WOOD_TOKENS = (
     "species", "wood",
 )
 
-FINISH_TOKENS = ("finished", "unfinished", "glazed", "fin.", "unf.", "fin ", "unf ")
+FINISH_TOKENS = (
+    "finished", "unfinished", "glazed", "fin.", "unf.", "fin ", "unf ",
+    "finshed",  # common HW typo
+)
 
 ID_TOKENS = (
     "item", "part", "sku", "model", "code", "style", "catalog", "stock",
@@ -52,7 +55,14 @@ SKIP_SHEET_RE = re.compile(
     """
 )
 
-MARKUP_SHEET_RE = re.compile(r"(?i)mark\s*up|multiplier|multipliers")
+# True markup control sheets — not product sheets like "PL With Markup"
+MARKUP_SHEET_RE = re.compile(
+    r"""(?ix)
+    ^(mark\s*-?\s*up|multipliers?|price\s*manipulator)(\b|$)
+    |wholesale\s*mark\s*-?\s*up
+    |^mark\s*-?\s*up\s
+    """
+)
 
 MONEY_CELL_RE = re.compile(r"^\$?\s*[\d,]+(?:\.\d{1,2})?$")
 
@@ -144,7 +154,7 @@ def looks_like_dim_header(col: str) -> bool:
 def classify_column(col: str) -> str:
     """Return: id | desc | dim | species | finish | finish_est | price | other | skip."""
     k = _norm_key(col)
-    if not k or k.startswith("unnamed"):
+    if not k or k.startswith("unnamed") or k.startswith("skip_"):
         return "skip"
     if re.search(r"finish(ing)?\s*(cost|est|estimate)", k) or "estimated finishing" in k:
         return "finish_est"
@@ -253,19 +263,118 @@ def dataframe_from_sheet(
     # Reset index after drop
     raw = raw.reset_index(drop=True)
     hdr_i = find_header_row(raw)
-    headers = []
-    seen = {}
-    for j, v in enumerate(raw.iloc[hdr_i].tolist()):
-        name = _norm(v) or f"col_{j}"
-        # de-dupe
-        base = name
-        if base in seen:
-            seen[base] += 1
-            name = f"{base} ({seen[base]})"
+    # Two-row headers: species on row hdr_i, Unfinished/Finished on hdr_i+1 (HW pattern)
+    body_start = hdr_i + 1
+    headers: list[str] = []
+    if hdr_i + 1 < len(raw):
+        next_cells = [_norm(v) for v in raw.iloc[hdr_i + 1].tolist()]
+        finish_hits = sum(1 for c in next_cells if looks_like_finish_header(c))
+        if finish_hits >= 2:
+            species_carry = ""
+            seen: dict[str, int] = {}
+            provisional: list[str] = []
+            past_markup = False
+            for j in range(raw.shape[1]):
+                top = _norm(raw.iat[hdr_i, j]) if j < raw.shape[1] else ""
+                bot = next_cells[j] if j < len(next_cells) else ""
+                if (top and re.search(r"(?i)mark\s*up|multiplier", top)) or (
+                    bot and re.search(r"(?i)mark\s*up|multiplier", bot)
+                ):
+                    past_markup = True
+                    species_carry = ""
+                if past_markup:
+                    # HopeWood / HW: columns after "Markup over" are calculator adders
+                    provisional.append(f"skip_{j}")
+                    continue
+                if top and not looks_like_finish_header(top) and not top.lower().startswith("col_"):
+                    if not looks_like_id_header(top) and not looks_like_desc_header(top) and not looks_like_dim_header(top):
+                        low = top.lower()
+                        woodish = (
+                            looks_like_species_header(top)
+                            or any(t in low for t in WOOD_TOKENS)
+                            or bool(re.search(
+                                r"(?i)\b(oak|maple|cherry|walnut|hick(?:ory)?|qswo|qsw?|"
+                                r"ch|hm|ro|bsm|rustic)\b",
+                                top,
+                            ))
+                        )
+                        if woodish:
+                            species_carry = top
+                        elif not looks_like_finish_header(top):
+                            # Non-wood label breaks the primary matrix block
+                            species_carry = ""
+                if bot and looks_like_finish_header(bot) and species_carry:
+                    name = f"{species_carry} | {bot}"
+                elif top:
+                    name = top
+                elif bot:
+                    name = bot
+                else:
+                    name = f"col_{j}"
+                provisional.append(name)
+
+            # Keep primary species|finish groups.
+            # HopeWood has unfinished+finished pairs; Premier has finished-only.
+            # Require BOTH only when the sheet actually uses unfinished columns.
+            species_order: list[str] = []
+            species_finishes: dict[str, set[str]] = {}
+            for name in provisional:
+                if " | " not in name:
+                    continue
+                sp, fin = name.split(" | ", 1)
+                if sp not in species_finishes:
+                    species_order.append(sp)
+                    species_finishes[sp] = set()
+                species_finishes[sp].add(fin.lower())
+            sheet_has_unfinished = any(
+                any("unf" in f for f in fins) for fins in species_finishes.values()
+            )
+            complete_ordered = []
+            for sp in species_order:
+                fins = species_finishes[sp]
+                has_fin = any("fin" in f and "unf" not in f for f in fins)
+                has_unf = any("unf" in f for f in fins)
+                if sheet_has_unfinished:
+                    ok = has_fin and has_unf
+                else:
+                    ok = has_fin or has_unf
+                if ok:
+                    complete_ordered.append(sp)
+                else:
+                    break  # stop at first incomplete group (HW adder cols)
+            complete = set(complete_ordered)
+
+            headers = []
+            for name in provisional:
+                if name.startswith("skip_") or (
+                    " | " in name and name.split(" | ", 1)[0] not in complete
+                ):
+                    base = f"skip_{name}" if not name.startswith("skip_") else name
+                else:
+                    base = name
+                if base in seen:
+                    seen[base] += 1
+                    headers.append(f"{base} ({seen[base]})")
+                else:
+                    seen[base] = 1
+                    headers.append(base)
+            body_start = hdr_i + 2
         else:
-            seen[base] = 1
-        headers.append(name)
-    body = raw.iloc[hdr_i + 1 :].copy()
+            headers = []
+    if not headers:
+        seen = {}
+        for j, v in enumerate(raw.iloc[hdr_i].tolist()):
+            name = _norm(v) or f"col_{j}"
+            base = name
+            if base in seen:
+                seen[base] += 1
+                name = f"{base} ({seen[base]})"
+            else:
+                seen[base] = 1
+            headers.append(name)
+        body_start = hdr_i + 1
+
+    body = raw.iloc[body_start:].copy()
     body.columns = headers
     body = body.dropna(how="all")
     return body.reset_index(drop=True)
@@ -285,10 +394,24 @@ def list_excel_sheets(data: bytes) -> list[str]:
     return list(xl.sheet_names)
 
 
+def _is_markup_control_sheet(name: str) -> bool:
+    """True for Markup/Multiplier control tabs; false for 'PL With Markup' price sheets."""
+    n = str(name).strip()
+    low = n.lower()
+    # Product sheets that already apply markup
+    if re.search(r"(?i)\b(pl|price\s*list|export|print|to\s*export)\b", low) and re.search(
+        r"(?i)mark\s*-?\s*up", low
+    ):
+        return False
+    return bool(MARKUP_SHEET_RE.search(n)) or low in {
+        "markup", "mark-up", "mark up", "multiplier", "multipliers", "mark-up page",
+    }
+
+
 def detect_markup_from_workbook(data: bytes, sheet_names: list[str]) -> Optional[float]:
     """Scan Markup sheets for a plausible multiplier (0.5–20 or percent 50–2000)."""
     for name in sheet_names:
-        if not MARKUP_SHEET_RE.search(str(name)):
+        if not _is_markup_control_sheet(str(name)):
             continue
         try:
             bio = io.BytesIO(data)
@@ -318,8 +441,18 @@ def detect_markup_from_workbook(data: bytes, sheet_names: list[str]) -> Optional
                             elif f is not None and 50 <= f <= 400:
                                 candidates.append(f / 100.0)
         if candidates:
-            # prefer values near 2.7 or 1.7
-            candidates.sort(key=lambda x: min(abs(x - 2.7), abs(x - 1.7), abs(x - 1.0)))
+            # Prefer real dealer mults (2.7, 1.7). Bare 1.0 often appears as
+            # a placeholder / percent edge-case and must not win over 2.7.
+            def _markup_rank(x: float) -> tuple:
+                if abs(x - 2.7) < 0.05:
+                    return (0, 0.0)
+                if abs(x - 1.7) < 0.05:
+                    return (1, 0.0)
+                if abs(x - 1.0) < 0.02:
+                    return (9, 0.0)  # last resort
+                return (5, min(abs(x - 2.7), abs(x - 1.7)))
+
+            candidates.sort(key=_markup_rank)
             return candidates[0]
     return None
 
@@ -351,8 +484,12 @@ def classify_sheet(df: pd.DataFrame, sheet_name: str) -> SheetLayout:
 
     kinds = {c: classify_column(c) for c in df.columns}
     # promote "other" columns that are mostly prices
+    # Never promote explicit skip_ columns (HW markup-adder orphans).
     for c, k in list(kinds.items()):
-        if k in ("other", "skip", "meta") and is_price_column(df[c], min_hits=4):
+        if str(c).lower().startswith("skip_"):
+            kinds[c] = "skip"
+            continue
+        if k in ("other", "meta") and is_price_column(df[c], min_hits=4):
             # if header has wood → species; else price
             if looks_like_species_header(c) or sum(1 for t in WOOD_TOKENS if t in _norm_key(c)) >= 1:
                 kinds[c] = "species"
@@ -473,12 +610,14 @@ def unpivot_wide_species(
     *,
     default_collection: str = "",
     vendor: str = "",
+    wholesale_map: Optional[dict[str, str]] = None,
 ) -> pd.DataFrame:
     """Expand species columns into long rows."""
     rows = []
     current_collection = default_collection or None
     id_col = layout.id_col or _guess_id_from_values(df)
     desc_col = layout.desc_col
+    wholesale_map = wholesale_map or {}
     # if no desc, sometimes description is second text col
     if not desc_col:
         for c in df.columns:
@@ -491,12 +630,19 @@ def unpivot_wide_species(
     if not species_cols:
         return pd.DataFrame()
 
+    # price source columns (wholesale sibling when markup formulas sit on headers)
+    price_src = {c: wholesale_map.get(c, c) for c in species_cols}
+
     for _, row in df.iterrows():
         vals = row.tolist()
         # section header?
         part = _norm(row[id_col]) if id_col and id_col in row.index else ""
         desc = _norm(row[desc_col]) if desc_col and desc_col in row.index else ""
-        any_price = any(_to_float(row[c]) is not None for c in species_cols if c in row.index)
+        any_price = any(
+            _to_float(row[price_src[c]]) is not None
+            for c in species_cols
+            if price_src[c] in row.index
+        )
 
         if not any_price:
             current_collection = _section_collection(vals, current_collection)
@@ -514,24 +660,39 @@ def unpivot_wide_species(
             finish_est = _to_float(row[layout.finish_est_col])
 
         for tier_i, col in enumerate(species_cols, start=1):
-            if col not in row.index:
+            src = price_src.get(col, col)
+            if src not in row.index:
                 continue
-            price = _to_float(row[col])
+            price = _to_float(row[src])
             if price is None:
                 continue
             notes_parts = []
             if finish_est is not None:
                 notes_parts.append(f"finish_est={finish_est}")
+            # "Oak, Brown Maple | Finished" two-row header form
+            species_name = _norm(col)
+            finish_state = "finished"
+            if " | " in species_name:
+                left, right = species_name.split(" | ", 1)
+                species_name = left.strip()
+                rk = right.lower()
+                if "unf" in rk:
+                    finish_state = "unfinished"
+                elif "glaz" in rk:
+                    finish_state = "glazed"
+                else:
+                    finish_state = "finished"
             rows.append({
                 "vendor": vendor or None,
                 "collection": current_collection,
                 "part_number": part or None,
-                "description": desc or None,
+                # FN Chair etc.: Item # column is the full product name
+                "description": desc or part or None,
                 "dimensions": dims,
                 "option_key": None,
-                "species": _norm(col),
+                "species": species_name,
                 "species_tier": tier_i,
-                "finish_state": "finished",  # default for species-only matrices
+                "finish_state": finish_state,
                 "base_price": price,
                 "price_basis": "wholesale",
                 "unit": None,
@@ -659,6 +820,51 @@ def extract_long_flat(
     return pd.DataFrame(rows)
 
 
+def wholesale_col_for_species(
+    df: pd.DataFrame,
+    layout: "SheetLayout",
+    markup: Optional[float],
+) -> dict[str, str]:
+    """
+    Premier-style: species headers sit on marked-up formula columns; true
+    wholesale lives in neighboring unlabeled price cols (species ≈ wholesale × markup).
+    Returns map species_col → wholesale_col (only when swap is safe).
+    """
+    out: dict[str, str] = {}
+    if not markup or markup < 1.2 or not layout.species_cols:
+        return out
+    used: set[str] = set()
+    for sc in layout.species_cols:
+        if sc not in df.columns:
+            continue
+        best = None
+        best_err = 1.0
+        for c in df.columns:
+            if c == sc or c in used or c in layout.species_cols:
+                continue
+            if c == layout.id_col or c == layout.desc_col or c in layout.dim_cols:
+                continue
+            if not is_price_column(df[c], min_hits=2):
+                continue
+            ratios = []
+            for a, b in zip(df[sc].head(40), df[c].head(40)):
+                fa, fb = _to_float(a), _to_float(b)
+                if fa and fb and fb > 0:
+                    ratios.append(fa / fb)
+            if len(ratios) < 3:
+                continue
+            ratios.sort()
+            med = ratios[len(ratios) // 2]
+            err = abs(med - markup) / markup
+            if err < 0.08 and err < best_err:
+                best = c
+                best_err = err
+        if best is not None:
+            out[sc] = best
+            used.add(best)
+    return out
+
+
 def _clean_long_rows(df: pd.DataFrame) -> pd.DataFrame:
     """Remove info-sheet debris and empty configs."""
     if df.empty:
@@ -689,6 +895,544 @@ class WorkbookImportResult:
     notes: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Patio Kraft — outdoor poly color-tier sections (not wood species)
+# ---------------------------------------------------------------------------
+#
+# Builders ship:
+#   [Collection title]
+#   [Standard Colors | Bright Colors | Woodgrain Colors]   ← row above header
+#   Item # | Description | … | $ | $ | $
+#   VECG   | Chair Glider | … | …
+#
+# Sections repeat down the sheet (Vienna, London, Accessories, …).
+# We store long-form: one row per (SKU × color tier). Prefer Wholesale sheet.
+
+PK_SKU_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-_/.]{1,14}$")
+PK_ITEM_HEADER_RE = re.compile(r"(?i)^item\s*#?$|^item\s*(no\.?|number)$")
+PK_COLLECTION_RE = re.compile(
+    r"(?i)\bcollection\b|accessories|frame\s*systems|furniture\s*covers|"
+    r"planters|benches|carts|add[\s\-]?ons?"
+)
+PK_TIER_LABEL_RE = re.compile(
+    r"(?i)standard\s*(poly\s*)?colors?|bright\s*colors?|woodgrain|poly\s*colors?|"
+    r"^black$|^price$"
+)
+PK_POLICY_RE = re.compile(
+    r"(?i)cleaning|warranty|internet\s*dealer|shipping|cancellation|subject to|"
+    r"please note|poly color list|prices effective|enter additional markup"
+)
+
+
+def looks_like_patio_kraft(
+    filename: str = "",
+    sheet_names: Optional[list[str]] = None,
+    data: Optional[bytes] = None,
+) -> bool:
+    """Detect Patio Kraft outdoor price books by name or sheet signatures."""
+    fn = (filename or "").lower().replace("_", " ").replace("-", " ")
+    if "patio" in fn and "kraft" in fn:
+        return True
+    names = sheet_names or []
+    lower = {str(s).strip().lower() for s in names}
+    if not ({"retail", "wholesale"} <= lower):
+        return False
+    if data is None:
+        return False
+    # Confirm: deep Item # + color-tier headers (not a generic Retail/Wholesale book)
+    try:
+        wh = next(s for s in names if str(s).strip().lower() == "wholesale")
+        bio = io.BytesIO(data)
+        raw = pd.read_excel(bio, sheet_name=wh, header=None)
+    except Exception:
+        return False
+    item_hits = 0
+    tier_hits = 0
+    for i in range(min(len(raw), 400)):
+        c0 = raw.iat[i, 0] if raw.shape[1] else None
+        if pd.notna(c0) and PK_ITEM_HEADER_RE.match(_norm(c0)):
+            item_hits += 1
+        for j in range(min(raw.shape[1], 12)):
+            v = raw.iat[i, j]
+            if pd.notna(v) and PK_TIER_LABEL_RE.search(_norm(v)):
+                tier_hits += 1
+                break
+    return item_hits >= 3 and tier_hits >= 3
+
+
+def _pk_norm_tier(label: str) -> str:
+    """Canonical color-tier names for search/quotes."""
+    k = re.sub(r"\s+", " ", _norm(label).replace("\n", " ")).strip()
+    low = k.lower()
+    if "woodgrain" in low:
+        return "Woodgrain Colors"
+    if "bright" in low:
+        return "Bright Colors"
+    if "standard poly" in low or ("poly" in low and "standard" in low):
+        return "Standard Poly Colors"
+    if "standard" in low and "color" in low:
+        return "Standard Colors"
+    if low == "black":
+        return "Black"
+    if low == "price":
+        return "Price"
+    return k
+
+
+def _pk_tier_map(raw: pd.DataFrame, header_i: int) -> dict[int, str]:
+    """
+    Map column index → color-tier label for a section headed by Item # at header_i.
+    Labels usually sit on the row above Item # (cols 7–9); sometimes Price is on the header row.
+    """
+    labels: dict[int, str] = {}
+    # Prefer the row *above* Item # (real color tiers). Only use header-row
+    # labels for columns still empty — never let bare "Price" overwrite a tier.
+    for src_i in (header_i - 1, header_i):
+        if src_i < 0 or src_i >= len(raw):
+            continue
+        for j in range(2, raw.shape[1]):
+            v = raw.iat[src_i, j]
+            if pd.isna(v):
+                continue
+            t = _norm(v)
+            if not t or t.startswith("•") or re.match(r"(?i)^catalog\b", t):
+                continue
+            if not PK_TIER_LABEL_RE.search(t):
+                continue
+            canon = _pk_norm_tier(t)
+            if j in labels:
+                # Keep existing color tier; ignore later "Price" overwrite
+                if labels[j].lower() != "price":
+                    continue
+                if canon.lower() == "price":
+                    continue
+            labels[j] = canon
+    # Prefer real color tiers over bare "Price" when both exist on the map
+    if any(v.lower() != "price" for v in labels.values()):
+        labels = {j: v for j, v in labels.items() if v.lower() != "price"}
+    return labels
+
+
+def parse_patio_kraft_sheet(
+    raw: pd.DataFrame,
+    *,
+    vendor: str = "",
+    default_collection: str = "",
+    price_basis: str = "wholesale",
+) -> pd.DataFrame:
+    """
+    Walk a Patio Kraft Retail/Wholesale sheet: multi-section Item # tables with
+    Standard / Bright / Woodgrain (or Black / Poly) price columns → long rows.
+    """
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+
+    rows: list[dict] = []
+    current_collection: Optional[str] = default_collection or None
+    tier_map: dict[int, str] = {}
+
+    for i in range(len(raw)):
+        c0 = raw.iat[i, 0] if raw.shape[1] else None
+        s0 = _norm(c0) if pd.notna(c0) else ""
+
+        # Section / collection title (short single-cell headers)
+        if s0 and PK_COLLECTION_RE.search(s0) and not PK_POLICY_RE.search(s0):
+            # Reject multi-line policy blobs that mention "collection"
+            raw0 = str(c0) if pd.notna(c0) else ""
+            if "\n" not in raw0 and len(s0) <= 70:
+                # "Furniture Covers, continued" → "Furniture Covers"
+                current_collection = re.sub(
+                    r",?\s*continued\s*$", "", s0, flags=re.I
+                ).strip() or s0
+                continue
+
+        # Repeated Item # header starts a new price-column mapping
+        if s0 and PK_ITEM_HEADER_RE.match(s0):
+            tier_map = _pk_tier_map(raw, i)
+            continue
+
+        # SKU data row
+        if not s0 or not PK_SKU_RE.match(s0):
+            continue
+        if PK_ITEM_HEADER_RE.match(s0) or s0.lower() in {"price", "description"}:
+            continue
+
+        desc = ""
+        if raw.shape[1] > 1 and pd.notna(raw.iat[i, 1]):
+            desc = _norm(raw.iat[i, 1])
+        if not desc or desc.lower() in {"description", "item #", "item"}:
+            continue
+        if PK_POLICY_RE.search(desc):
+            continue
+
+        # Resolve price columns for this row
+        col_labels: list[tuple[int, str]] = []
+        if tier_map:
+            col_labels = sorted(tier_map.items())
+        else:
+            for j in range(2, raw.shape[1]):
+                if _to_float(raw.iat[i, j]) is not None:
+                    col_labels.append((j, "Price"))
+
+        if not col_labels:
+            continue
+
+        # Collect filled price cells for this SKU
+        filled: list[tuple[int, str, float]] = []
+        for j, label in col_labels:
+            if j >= raw.shape[1]:
+                continue
+            price = _to_float(raw.iat[i, j])
+            if price is None:
+                continue
+            filled.append((j, label, price))
+
+        # Fallback: scan any numeric cols if mapped cols empty
+        if not filled:
+            for j in range(2, raw.shape[1]):
+                price = _to_float(raw.iat[i, j])
+                if price is None:
+                    continue
+                label = tier_map.get(j, "Price") if tier_map else "Price"
+                filled.append((j, label, price))
+
+        if not filled:
+            continue
+
+        # One filled price → single list price (frames, covers, pillows).
+        # Color headers on the sheet often linger above single-price sections;
+        # do not invent a woodgrain/black tier for those SKUs.
+        # Two+ filled prices → real color-tier matrix.
+        single_price = len(filled) == 1
+        for tier_i, (j, label, price) in enumerate(filled, start=1):
+            if single_price or label.lower() == "price":
+                species = None
+                stier = None
+            else:
+                species = label
+                stier = tier_i
+            rows.append({
+                "vendor": vendor or None,
+                "collection": current_collection,
+                "part_number": s0,
+                "description": desc,
+                "dimensions": None,
+                "option_key": None,
+                "species": species,
+                "species_tier": stier,
+                "finish_state": "finished",
+                "base_price": price,
+                "price_basis": price_basis,
+                "unit": None,
+                "notes": None,
+            })
+
+    return _clean_long_rows(pd.DataFrame(rows))
+
+
+def import_patio_kraft_workbook(
+    data: bytes,
+    *,
+    vendor: str = "",
+    default_collection: str = "",
+    sheet_filter: Optional[list[str]] = None,
+    filename: str = "",
+) -> WorkbookImportResult:
+    """
+    Patio Kraft specialized import.
+
+    Standard FAF rule: store **Wholesale** as base_price (price_basis=wholesale),
+    then apply the store multiplier (default 2.7). Retail sheet is skipped unless
+    explicitly requested via sheet_filter — list retail is ~2.2× wholesale.
+    """
+    names = list_excel_sheets(data)
+    vendor_name = (vendor or "").strip() or "Patio Kraft"
+    frames: list[pd.DataFrame] = []
+    tried: list[dict] = []
+
+    wholesale = next((n for n in names if str(n).strip().lower() == "wholesale"), None)
+    retail = next((n for n in names if str(n).strip().lower() == "retail"), None)
+
+    if sheet_filter is not None:
+        targets = [n for n in names if n in sheet_filter]
+    elif wholesale:
+        targets = [wholesale]
+    elif retail:
+        targets = [retail]
+    else:
+        targets = list(names)
+
+    for name in names:
+        if name not in targets:
+            tried.append({
+                "sheet": name,
+                "layout": "skip",
+                "rows": 0,
+                "note": "Patio Kraft: prefer Wholesale; skipped",
+            })
+            continue
+        try:
+            bio = io.BytesIO(data)
+            raw = pd.read_excel(bio, sheet_name=name, header=None)
+        except Exception as e:
+            tried.append({"sheet": name, "layout": "error", "rows": 0, "note": str(e)})
+            continue
+
+        basis = "wholesale" if str(name).strip().lower() == "wholesale" else (
+            "retail" if str(name).strip().lower() == "retail" else "wholesale"
+        )
+        long = parse_patio_kraft_sheet(
+            raw,
+            vendor=vendor_name,
+            default_collection=default_collection,
+            price_basis=basis,
+        )
+        n = len(long) if long is not None and not long.empty else 0
+        tried.append({
+            "sheet": name,
+            "layout": "patio_kraft_color_tiers",
+            "rows": n,
+            "note": f"price_basis={basis}; multi-section Item# + color tiers",
+            "species_cols": sorted({
+                str(s) for s in (long["species"].dropna().unique().tolist() if n else [])
+            })[:8],
+            "id_col": "Item #",
+            "desc_col": "Description",
+        })
+        if n > 0:
+            if "collection" in long.columns:
+                long["collection"] = long["collection"].fillna(default_collection or name)
+            frames.append(long)
+
+    if frames:
+        out = pd.concat(frames, ignore_index=True)
+    else:
+        out = pd.DataFrame(columns=[
+            "vendor", "collection", "part_number", "description", "dimensions",
+            "option_key", "species", "species_tier", "finish_state", "base_price",
+            "price_basis", "unit", "notes",
+        ])
+
+    if vendor_name and not out.empty:
+        out["vendor"] = vendor_name
+
+    note = (
+        f"{filename + ': ' if filename else ''}"
+        f"Patio Kraft color-tier import · {len(out)} long rows · "
+        f"sheets={ [t['sheet'] for t in tried if t.get('rows')] }"
+    )
+    return WorkbookImportResult(
+        sheets_tried=tried,
+        long_df=out,
+        detected_markup=None,  # Retail "1.2" cell is not FAF mult; wholesale bases only
+        sheet_names=names,
+        notes=note,
+    )
+
+
+# ---------------------------------------------------------------------------
+# LuxHome / AJ's seating — fabric-grade price columns
+# ---------------------------------------------------------------------------
+
+LUX_FABRIC_RE = re.compile(
+    r"(?i)^(standard|premium|ultra\s*leather|genuine\s*leather|leather)\s*$"
+)
+LUX_SKU_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-_/. ]{1,20}$")
+
+
+def looks_like_luxhome(filename: str = "", sheet_names: Optional[list[str]] = None) -> bool:
+    fn = (filename or "").lower().replace("_", " ")
+    if "luxhome" in fn or "lux home" in fn or "aj's lux" in fn or "ajs lux" in fn:
+        return True
+    if "luxhome" in " ".join(str(s).lower() for s in (sheet_names or [])):
+        return True
+    return False
+
+
+def parse_luxhome_sheet(
+    raw: pd.DataFrame,
+    *,
+    vendor: str = "",
+    default_collection: str = "",
+    price_basis: str = "wholesale",
+) -> pd.DataFrame:
+    """
+    Multi-section seating book:
+      Standard | Premium | Ultra Leather | Genuine Leather
+      10 SC-FA | Serene Chair ... | 602 | 635 | 800 | 916.6
+    """
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+
+    rows: list[dict] = []
+    current_collection: Optional[str] = default_collection or None
+    tier_map: dict[int, str] = {}  # col -> fabric grade
+
+    def _norm_fabric(label: str) -> str:
+        k = re.sub(r"\s+", " ", _norm(label)).strip()
+        low = k.lower()
+        if "ultra" in low:
+            return "Ultra Leather"
+        if "genuine" in low or (low.startswith("leather") and "ultra" not in low):
+            return "Genuine Leather"
+        if "premium" in low:
+            return "Premium"
+        if "standard" in low:
+            return "Standard"
+        return k
+
+    for i in range(len(raw)):
+        # Fabric-tier header row (2+ grade labels, little else)
+        grade_cols = []
+        for j in range(raw.shape[1]):
+            v = raw.iat[i, j]
+            if pd.isna(v):
+                continue
+            t = _norm(v)
+            if LUX_FABRIC_RE.match(t):
+                grade_cols.append((j, _norm_fabric(t)))
+        if len(grade_cols) >= 2:
+            tier_map = {j: lab for j, lab in grade_cols}
+            continue
+
+        c0 = raw.iat[i, 0] if raw.shape[1] else None
+        s0 = _norm(c0) if pd.notna(c0) else ""
+
+        # Collection titles often in col 0 or 2
+        for j in range(min(3, raw.shape[1])):
+            v = raw.iat[i, j]
+            if pd.isna(v):
+                continue
+            t = _norm(v)
+            if re.search(r"(?i)\bcollection\b", t) and len(t) <= 80 and "\n" not in str(v):
+                current_collection = t
+                break
+
+        if not s0 or not LUX_SKU_RE.match(s0):
+            continue
+        if re.search(r"(?i)wholesale|warranty|please note|luxhome seating", s0):
+            continue
+
+        desc = ""
+        if raw.shape[1] > 1 and pd.notna(raw.iat[i, 1]):
+            desc = _norm(raw.iat[i, 1])
+        if not desc or len(desc) < 2:
+            continue
+
+        if not tier_map:
+            # invent from numeric cols 2+
+            for j in range(2, min(raw.shape[1], 8)):
+                if _to_float(raw.iat[i, j]) is not None:
+                    tier_map[j] = f"Tier{j}"
+
+        for tier_i, (j, label) in enumerate(sorted(tier_map.items()), start=1):
+            if j >= raw.shape[1]:
+                continue
+            price = _to_float(raw.iat[i, j])
+            if price is None:
+                continue
+            # skip yardage/sq.ft style tiny junk already filtered by _to_float floor
+            rows.append({
+                "vendor": vendor or None,
+                "collection": current_collection,
+                "part_number": s0,
+                "description": desc,
+                "dimensions": None,
+                "option_key": None,
+                "species": label if not label.startswith("Tier") else None,
+                "species_tier": tier_i,
+                "finish_state": "finished",
+                "base_price": price,
+                "price_basis": price_basis,
+                "unit": None,
+                "notes": None,
+            })
+
+    return _clean_long_rows(pd.DataFrame(rows))
+
+
+def import_luxhome_workbook(
+    data: bytes,
+    *,
+    vendor: str = "",
+    default_collection: str = "",
+    sheet_filter: Optional[list[str]] = None,
+    filename: str = "",
+) -> WorkbookImportResult:
+    names = list_excel_sheets(data)
+    vendor_name = (vendor or "").strip() or "LuxHome"
+    frames: list[pd.DataFrame] = []
+    tried: list[dict] = []
+
+    # Prefer plain Wholesale over MARKUP (markup sheet may already be retailized)
+    wholesale = next(
+        (n for n in names if str(n).strip().lower() == "wholesale"), None
+    )
+    if sheet_filter is not None:
+        targets = [n for n in names if n in sheet_filter]
+    elif wholesale:
+        targets = [wholesale]
+    else:
+        targets = [
+            n for n in names
+            if not re.search(r"(?i)markup|mark\s*up|instruction", str(n))
+        ] or list(names)
+
+    for name in names:
+        if name not in targets:
+            tried.append({
+                "sheet": name, "layout": "skip", "rows": 0,
+                "note": "LuxHome: prefer Wholesale sheet",
+            })
+            continue
+        try:
+            bio = io.BytesIO(data)
+            # .xls may need xlrd
+            try:
+                raw = pd.read_excel(bio, sheet_name=name, header=None, engine="xlrd")
+            except Exception:
+                bio.seek(0)
+                raw = pd.read_excel(bio, sheet_name=name, header=None)
+        except Exception as e:
+            tried.append({"sheet": name, "layout": "error", "rows": 0, "note": str(e)})
+            continue
+
+        long = parse_luxhome_sheet(
+            raw, vendor=vendor_name, default_collection=default_collection,
+            price_basis="wholesale",
+        )
+        n = len(long) if long is not None and not long.empty else 0
+        tried.append({
+            "sheet": name,
+            "layout": "luxhome_fabric_grades",
+            "rows": n,
+            "note": "Standard/Premium/Ultra/Genuine leather tiers",
+            "species_cols": sorted({
+                str(s) for s in (long["species"].dropna().unique().tolist() if n else [])
+            }),
+            "id_col": "model",
+            "desc_col": "description",
+        })
+        if n > 0:
+            frames.append(long)
+
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=[
+        "vendor", "collection", "part_number", "description", "dimensions",
+        "option_key", "species", "species_tier", "finish_state", "base_price",
+        "price_basis", "unit", "notes",
+    ])
+    if vendor_name and not out.empty:
+        out["vendor"] = vendor_name
+
+    return WorkbookImportResult(
+        sheets_tried=tried,
+        long_df=out,
+        detected_markup=None,
+        sheet_names=names,
+        notes=f"{filename + ': ' if filename else ''}LuxHome fabric-grade · {len(out)} rows",
+    )
+
+
 def import_workbook(
     data: bytes,
     *,
@@ -702,6 +1446,26 @@ def import_workbook(
     return long-form DataFrame ready for master insert.
     """
     names = list_excel_sheets(data)
+
+    # Specialized outdoor poly layout (multi-section color tiers)
+    if looks_like_patio_kraft(filename, names, data):
+        return import_patio_kraft_workbook(
+            data,
+            vendor=vendor,
+            default_collection=default_collection,
+            sheet_filter=sheet_filter,
+            filename=filename,
+        )
+
+    if looks_like_luxhome(filename, names):
+        return import_luxhome_workbook(
+            data,
+            vendor=vendor,
+            default_collection=default_collection,
+            sheet_filter=sheet_filter,
+            filename=filename,
+        )
+
     markup = detect_markup_from_workbook(data, names)
     frames = []
     tried = []
@@ -725,9 +1489,15 @@ def import_workbook(
 
         layout = classify_sheet(df, name)
         long = pd.DataFrame()
+        wmap = wholesale_col_for_species(df, layout, markup) if layout.layout == "wide_species" else {}
+        if wmap:
+            layout.notes = (layout.notes or "") + f" | wholesale-under-markup×{markup:g}"
         if layout.layout == "wide_species":
             long = unpivot_wide_species(
-                df, layout, default_collection=default_collection or name, vendor=vendor
+                df, layout,
+                default_collection=default_collection or name,
+                vendor=vendor,
+                wholesale_map=wmap,
             )
         elif layout.layout == "wide_finish":
             long = unpivot_wide_finish(
@@ -752,8 +1522,12 @@ def import_workbook(
                     dim_cols=layout.dim_cols,
                     species_cols=numericish,
                 )
+                wmap2 = wholesale_col_for_species(df, layout_try, markup)
                 long = unpivot_wide_species(
-                    df, layout_try, default_collection=default_collection or name, vendor=vendor
+                    df, layout_try,
+                    default_collection=default_collection or name,
+                    vendor=vendor,
+                    wholesale_map=wmap2,
                 )
             elif guessed and len(numericish) == 1:
                 layout_try = SheetLayout(
