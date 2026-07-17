@@ -3,7 +3,8 @@
 ## Option A — Streamlit Community Cloud (permanent URL)
 
 1. Open https://share.streamlit.io/deploy (sign in with GitHub).
-2. **Repository:** `Koffeekinggamer/pricebook-system` (private is OK if GitHub is connected).
+2. **Repository:** `Koffeekinggamer/pricebook-system`  
+   Public: https://github.com/Koffeekinggamer/pricebook-system
 3. **Branch:** `main`
 4. **Main file path:** `pricebook_app.py`
 5. **App URL** (optional): e.g. `faf-pricebook` → `https://faf-pricebook.streamlit.app`
@@ -19,7 +20,8 @@ password = "Amish"
 8. Save secrets and reboot the app if needed.
 9. Confirm login works and Search shows ~30k+ rows.
 
-**Note:** Free Community Cloud is fine for floor use. Keep the GitHub repo **private** (catalog data is in the repo for cloud seed).
+**Note:** The GitHub repo is **public** so Streamlit Cloud can deploy without private-repo OAuth.  
+The app itself still requires login (Foothills / Amish). Secrets stay in Streamlit Cloud / local `secrets.toml` only (not committed).
 
 ## Option B — Public tunnel from this Mac (already scripted)
 
