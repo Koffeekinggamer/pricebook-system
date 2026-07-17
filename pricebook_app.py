@@ -234,18 +234,45 @@ with tab_search:
     with f4:
         lim = st.number_input("Max rows", 50, 5000, 150, 50, key="sl")
 
-    results = svc.search(
-        q,
-        vendor=None if vf == "All" else vf,
-        collection=None if cf == "All" else cf,
-        finish_state=None if ff == "All" else ff,
-        limit=int(lim),
-    )
+    # Don't dump the whole book when search is empty — unless a builder is chosen
+    if not (q or "").strip() and vf == "All":
+        results = pd.DataFrame()
+        empty_reason = "type"
+    else:
+        results = svc.search(
+            q,
+            vendor=None if vf == "All" else vf,
+            collection=None if cf == "All" else cf,
+            finish_state=None if ff == "All" else ff,
+            limit=int(lim),
+        )
+        empty_reason = "none" if results.empty else ""
     display = results.copy()
+
+    # Active quote running total (floor awareness)
+    aq = st.session_state.get("active_quote")
+    if aq:
+        try:
+            tot = svc.quote_totals(int(aq))
+            qmeta = svc.get_quote(int(aq)) or {}
+            st.info(
+                f"Active quote **{qmeta.get('quote_number')}** · "
+                f"{qmeta.get('customer_name') or 'customer'} · "
+                f"**${tot['grand_total']:,.2f}** ({tot['line_count']} lines) — see **Quotes** tab"
+            )
+        except Exception:
+            pass
 
     # Floor table emphasizes RETAIL
     if display.empty:
-        st.info("No hits — try fewer words, or check **Builder** / **Finish** filters.")
+        if empty_reason == "type":
+            st.info(
+                "Type a part number or product words above — or pick a **Builder** to browse."
+            )
+        else:
+            st.info(
+                "No hits — try fewer words, or check **Builder** / **Finish** filters."
+            )
     else:
         st.markdown(
             f"**{len(display):,}** hits · "
@@ -388,15 +415,31 @@ with tab_search:
 # ---------------------------------------------------------------------------
 with tab_import:
     st.subheader("Import one supplier file")
-    vend = st.text_input("Vendor name", placeholder="Genuine Oak, FVWW, Schrock's…", key="iv")
+    st.caption(
+        "Leave builder blank to auto-detect from the filename "
+        "(one builder = one catalog · replace mode recommended)."
+    )
+    vend = st.text_input(
+        "Builder name (optional — auto from filename)",
+        placeholder="e.g. Genuine Oak — or leave blank",
+        key="iv",
+    )
     coll = st.text_input("Default collection (optional)", key="ic")
     upload = st.file_uploader("Excel or PDF", type=["xlsx", "xls", "xlsm", "pdf"], key="iu")
     pdf_pages = st.number_input("PDF max pages (0=all)", 0, 500, 0, key="ip")
 
     if upload:
+        from backend.standardize import resolve_builder_vendor
+
         data = _bytes(upload)
         name = upload.name
-        st.write(f"**{name}**")
+        auto_vend = resolve_builder_vendor(vend.strip() or name, filename=name) or vend.strip()
+        if not vend.strip() and auto_vend:
+            st.info(f"Builder detected: **{auto_vend}**")
+            vend_resolved = auto_vend
+        else:
+            vend_resolved = auto_vend or vend.strip()
+        st.write(f"**{name}** → **{vend_resolved or '(set builder name)'}**")
 
         if name.lower().endswith(".pdf"):
             max_p: Optional[int] = int(pdf_pages) if pdf_pages > 0 else None
@@ -404,7 +447,7 @@ with tab_import:
                 prelim = svc.preview_pdf(
                     data,
                     filename=name,
-                    vendor=vend.strip(),
+                    vendor=vend_resolved,
                     default_collection=coll.strip(),
                     multiplier=float(multiplier),
                     max_pages=max_p,
@@ -424,21 +467,21 @@ with tab_import:
                 prev = svc.preview_pdf(
                     data,
                     filename=name,
-                    vendor=vend.strip(),
+                    vendor=vend_resolved,
                     default_collection=coll.strip(),
                     multiplier=float(multiplier),
                     max_pages=max_p,
                     strategy_index=idx,
                 )
                 st.dataframe(prev.long_df.head(25), use_container_width=True)
-                render_commit(prev.rows, name, vend.strip())
+                render_commit(prev.rows, name, vend_resolved)
 
         else:
             with st.spinner("Scanning workbook…"):
                 prev = svc.preview_excel(
                     data,
                     filename=name,
-                    vendor=vend.strip(),
+                    vendor=vend_resolved,
                     default_collection=coll.strip(),
                     multiplier=float(multiplier),
                 )
@@ -478,12 +521,12 @@ with tab_import:
                     rows = normalize_dataframe(
                         df_raw,
                         source_file=name,
-                        vendor=vend.strip(),
+                        vendor=vend_resolved,
                         default_collection=coll.strip(),
                         multiplier=use_mult,
                         column_map=manual,
                     )
-                    render_commit(rows, name, vend.strip())
+                    render_commit(rows, name, vend_resolved)
             else:
                 selected = st.multiselect(
                     "Sheets", cands or prev.sheet_names, default=with_rows, key="isheets"
@@ -491,13 +534,12 @@ with tab_import:
                 prev = svc.preview_excel(
                     data,
                     filename=name,
-                    vendor=vend.strip(),
+                    vendor=vend_resolved,
                     default_collection=coll.strip(),
                     multiplier=use_mult,
                     sheet_filter=selected or None,
                     use_workbook_markup=False,
                 )
-                # force mult
                 from backend.normalize import long_df_to_rows
 
                 long_df = prev.long_df
@@ -515,20 +557,23 @@ with tab_import:
                     long_df,
                     source_file=name,
                     multiplier=use_mult,
-                    vendor=vend.strip(),
+                    vendor=vend_resolved,
                     default_collection=coll.strip(),
                 )
                 st.success(f"{len(rows):,} long-form rows · mult {use_mult:g}")
                 if not long_df.empty:
                     st.dataframe(long_df.head(40), use_container_width=True)
-                render_commit(rows, name, vend.strip())
+                render_commit(rows, name, vend_resolved)
 
 # ---------------------------------------------------------------------------
 # BATCH
 # ---------------------------------------------------------------------------
 with tab_batch:
     st.subheader("Batch import a folder of price lists")
-    st.caption("Excel preferred. Upsert by default. Vendor name derived from filename.")
+    st.caption(
+        "Excel preferred. Default mode **replaces each builder** (one catalog per builder). "
+        "Builder name is derived from the filename."
+    )
 
     default_folder = str(
         Path.home()
@@ -715,72 +760,93 @@ with tab_quotes:
                     st.success("Saved.")
 
                 st.markdown("##### Line items")
-                st.caption("Edit **Qty** and **Disc %** in the table, then save.")
+                st.caption("Edit **Qty** and **Disc %** in the table, then **Save line changes**.")
                 lines = svc.quote_lines(int(active_id))
                 if lines.empty:
                     st.caption("No lines yet — use **Search** tab or find item below.")
                 else:
-                    edit_cols = [
-                        c
-                        for c in [
-                            "id",
-                            "qty",
-                            "part_number",
-                            "description",
-                            "species",
-                            "unit_retail",
-                            "line_discount_pct",
-                            "line_total",
+                    edit_src = lines[
+                        [
+                            c
+                            for c in [
+                                "id",
+                                "qty",
+                                "part_number",
+                                "description",
+                                "species",
+                                "unit_retail",
+                                "line_discount_pct",
+                                "line_total",
+                            ]
+                            if c in lines.columns
                         ]
-                        if c in lines.columns
-                    ]
+                    ].copy()
+                    edit_src = edit_src.rename(
+                        columns={
+                            "id": "Line",
+                            "qty": "Qty",
+                            "part_number": "Part #",
+                            "description": "Description",
+                            "species": "Wood / option",
+                            "unit_retail": "Each $",
+                            "line_discount_pct": "Disc %",
+                            "line_total": "Line $",
+                        }
+                    )
                     edited = st.data_editor(
-                        lines[edit_cols],
+                        edit_src,
                         use_container_width=True,
                         hide_index=True,
                         num_rows="fixed",
-                        column_config=money_cols(lines),
-                        disabled=[
-                            c
-                            for c in edit_cols
-                            if c
-                            not in ("qty", "line_discount_pct")
-                        ],
+                        column_config={
+                            "Qty": st.column_config.NumberColumn(
+                                min_value=0.1, step=1.0, format="%.1f"
+                            ),
+                            "Disc %": st.column_config.NumberColumn(
+                                min_value=0.0, max_value=100.0, step=1.0, format="%.1f"
+                            ),
+                            "Each $": st.column_config.NumberColumn(
+                                format="$%.2f", disabled=True
+                            ),
+                            "Line $": st.column_config.NumberColumn(
+                                format="$%.2f", disabled=True
+                            ),
+                            "Line": st.column_config.NumberColumn(disabled=True),
+                            "Part #": st.column_config.TextColumn(disabled=True),
+                            "Description": st.column_config.TextColumn(disabled=True),
+                            "Wood / option": st.column_config.TextColumn(disabled=True),
+                        },
                         key=f"qedit_{active_id}",
                     )
-                    b1, b2, b3 = st.columns([1.2, 1.2, 1.5])
+                    b1, b2, b3 = st.columns([1.3, 1.5, 1.2])
                     with b1:
-                        if st.button("💾 Save qty / discounts", type="primary"):
+                        if st.button("💾 Save line changes", type="primary"):
                             for _, r in edited.iterrows():
                                 svc.update_quote_line(
-                                    int(r["id"]),
-                                    qty=float(r["qty"]),
-                                    line_discount_pct=float(
-                                        r.get("line_discount_pct") or 0
-                                    ),
+                                    int(r["Line"]),
+                                    qty=float(r["Qty"]),
+                                    line_discount_pct=float(r.get("Disc %") or 0),
                                 )
                             st.success("Lines updated.")
                             st.rerun()
                     with b2:
-                        # Remove without buried expander
                         line_map = {
                             int(r["id"]): (
-                                f"#{int(r['id'])} · {r.get('part_number') or '—'} · "
-                                f"{(r.get('description') or '')[:30]} · "
+                                f"{r.get('part_number') or '—'} · "
+                                f"{(r.get('description') or '')[:28]} · "
                                 f"${float(r.get('line_total') or 0):,.2f}"
                             )
                             for _, r in lines.iterrows()
                         }
                         del_id = st.selectbox(
-                            "Remove line",
+                            "Line to remove",
                             list(line_map.keys()),
                             format_func=lambda i: line_map[i],
                             key="qdel_pick",
-                            label_visibility="collapsed",
                         )
                     with b3:
                         st.write("")
-                        if st.button("🗑 Remove selected line", use_container_width=True):
+                        if st.button("🗑 Remove line", use_container_width=True):
                             svc.delete_quote_line(int(del_id))
                             st.rerun()
 
@@ -945,17 +1011,35 @@ with tab_vendors:
 # ---------------------------------------------------------------------------
 with tab_admin:
     st.subheader("Admin / data quality")
-    st.json(svc.stats())
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Rows", f"{stats['rows']:,}")
+    s2.metric("Builders", stats["vendors"])
+    s3.metric("Quotes", stats.get("quotes", 0))
     st.caption(f"Database: `{svc.path}`")
+    st.caption(f"Last backup: {_last_backup_hint()}")
 
-    st.markdown("##### Duplicates")
-    if st.button("Scan duplicate groups"):
-        dups = svc.find_duplicates(50)
-        if dups.empty:
-            st.success("No duplicate identity groups.")
-        else:
-            st.dataframe(dups, use_container_width=True)
-            st.session_state["dups_df"] = True
+    st.markdown("##### Maintenance")
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        if st.button("💾 Backup DB now"):
+            import subprocess
+            import sys
+
+            script = Path(__file__).resolve().parent / "scripts" / "backup_db.py"
+            rc = subprocess.call([sys.executable, str(script)])
+            st.success("Backup saved") if rc == 0 else st.error("Backup failed")
+    with m2:
+        if st.button("✨ Re-standardize master"):
+            report = svc.standardize_master()
+            st.write(report)
+            st.success("Standardize complete")
+    with m3:
+        if st.button("Scan duplicates"):
+            dups = svc.find_duplicates(50)
+            if dups.empty:
+                st.success("No duplicate identity groups.")
+            else:
+                st.dataframe(dups, use_container_width=True)
 
     c1, c2 = st.columns(2)
     with c1:

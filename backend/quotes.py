@@ -413,18 +413,36 @@ class QuoteRepository:
         pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
 
+        from backend.config import STORE
+
+        store_name = _pdf_safe(STORE.get("name") or "Foothills Amish Furniture")
+        tagline = _pdf_safe(STORE.get("tagline") or "Customer Price Quote")
+        store_phone = _pdf_safe(STORE.get("phone") or "")
+        store_email = _pdf_safe(STORE.get("email") or "")
+        store_addr = _pdf_safe(STORE.get("address") or "")
+        store_footer = _pdf_safe(
+            STORE.get("footer")
+            or "Prices subject to change. Thank you for your business."
+        )
+
         # FAF brand header
         pdf.set_fill_color(45, 74, 48)  # deep green
-        pdf.rect(0, 0, 216, 28, "F")
+        header_h = 28 if not (store_phone or store_addr) else 34
+        pdf.rect(0, 0, 216, header_h, "F")
         pdf.set_text_color(255, 255, 255)
-        pdf.set_xy(12, 8)
-        pdf.set_font("Helvetica", "B", 18)
-        self._cell(pdf, 0, 8, "FOOTHILLS AMISH FURNITURE", ln=True)
+        pdf.set_xy(12, 7)
+        pdf.set_font("Helvetica", "B", 16)
+        self._cell(pdf, 0, 7, store_name.upper()[:48], ln=True)
         pdf.set_x(12)
         pdf.set_font("Helvetica", "", 10)
-        self._cell(pdf, 0, 5, "Customer Price Quote", ln=True)
+        self._cell(pdf, 0, 5, tagline, ln=True)
+        contact_bits = [b for b in (store_addr, store_phone, store_email) if b]
+        if contact_bits:
+            pdf.set_x(12)
+            pdf.set_font("Helvetica", "", 8)
+            self._cell(pdf, 0, 4, "  |  ".join(contact_bits)[:90], ln=True)
         pdf.set_text_color(0, 0, 0)
-        pdf.set_y(34)
+        pdf.set_y(header_h + 6)
 
         pdf.set_font("Helvetica", "B", 12)
         self._cell(pdf, 0, 7, _pdf_safe(f"Quote #: {q.get('quote_number') or ''}"), ln=True)
@@ -509,16 +527,7 @@ class QuoteRepository:
 
         pdf.set_font("Helvetica", "", 8)
         pdf.ln(8)
-        self._cell(
-            pdf,
-            0,
-            5,
-            _pdf_safe(
-                "Foothills Amish Furniture - prices subject to change. "
-                "Thank you for your business."
-            ),
-            ln=True,
-        )
+        self._cell(pdf, 0, 5, store_footer[:120], ln=True)
 
         out = io.BytesIO()
         pdf.output(out)
