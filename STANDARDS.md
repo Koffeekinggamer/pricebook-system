@@ -20,7 +20,7 @@ CLI / UI defaults use `replace_vendor`. Avoid **append** unless you intend dupli
 | Field | Rule |
 |-------|------|
 | **vendor** | Clean display name (`Hope Wood`, `Genuine Oak`, …) |
-| **collection** | Product section only — **not** sheet names (`Master`, `PL To Export`) |
+| **collection** | Product category only — not sheet names, not option/upcharge lines. Defaults: FN Chair → Seating, Genuine Oak → Casegoods. `Mult-Gun` → Gun Cabinets |
 | **part_number** | Trimmed SKU / item code (or full item name if builder has no SKU) |
 | **description** | Always filled (falls back to `part_number`) |
 | **species** | Wood tier **or** color/fabric option, slash-separated woods, Title Case. Never `col_N` / `FINISHED` |

@@ -585,22 +585,52 @@ def _combine_dims(row: pd.Series, dim_cols: list[str]) -> Optional[str]:
     return " × ".join(parts) if len(parts) > 1 else parts[0]
 
 
+_SECTION_JUNK_RE = re.compile(
+    r"""(?ix)
+    add\s+(metal|\$)|door\s+options?|inset\s+panel|replace\s+glass|
+    adjustable\s+shelf|markup|subtract\s+\d|subject\s+to\s+change|
+    please\s+note|for\s+matching|see\s+page|upcharge|option:|
+    \$50|finished\s*prices|unfinished\s*using
+    """
+)
+
+
 def _section_collection(row_vals: list, prev: Optional[str]) -> Optional[str]:
-    """If a row is a section header (single text cell, no prices), treat as collection."""
+    """If a row is a section header (text label, no real prices), treat as collection."""
     texts = [_norm(v) for v in row_vals if _norm(v)]
     if not texts:
         return prev
-    # header-like: 1-3 text cells, no money
-    moneys = [v for v in texts if _to_float(v) is not None]
+    # Ignore tiny 0 prices from blank matrix cells on section rows
+    moneys = [
+        v for v in texts
+        if (_to_float(v) is not None and float(_to_float(v)) > 1)
+    ]
     if moneys:
         return prev
     joined = texts[0]
-    if len(texts) <= 2 and 3 <= len(joined) <= 60:
-        if re.search(r"(?i)collection|series|bedroom|dining|chairs?|tables?|suite", joined):
-            return joined
-        # Title Case short phrase
-        if joined[0].isupper() and not re.match(r"^[A-Z0-9][A-Z0-9\-_/]{1,16}$", joined):
-            return joined
+    if len(joined) > 70 or _SECTION_JUNK_RE.search(joined):
+        # Option/instruction line — clear sticky collection
+        return None if _SECTION_JUNK_RE.search(joined) else prev
+    if not (3 <= len(joined) <= 60):
+        return prev
+    # ALL-CAPS category banners (SOFA MATE, CONTEMPORARY) or named collections
+    if re.search(
+        r"(?i)collection|series|bedroom|dining|chairs?|tables?|suite|"
+        r"consoles?|desks?|bookcases?|entertainment|seating|occasional|"
+        r"plant\s*stand|pedestal|bookshelf|shaker|mission",
+        joined,
+    ):
+        return joined.title() if joined.isupper() else joined
+    if joined.isupper() and re.search(r"[A-Z]{3,}", joined):
+        # SOFA MATE / CONTEMPORARY / DELUXE SHAKER
+        if not re.match(r"^[A-Z0-9][A-Z0-9\-_/]{1,16}$", joined):
+            return joined.title()
+    if (
+        joined[0].isupper()
+        and not re.match(r"^[A-Z0-9][A-Z0-9\-_/]{1,16}$", joined)
+        and not re.search(r"(?i)add |option|door |shelf|bracket|round rout", joined)
+    ):
+        return joined
     return prev
 
 

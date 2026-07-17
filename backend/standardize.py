@@ -319,27 +319,96 @@ def is_junk_species_row(species: Any) -> bool:
 _SHEET_COLLECTION_RE = re.compile(
     r"""(?ix)
     ^(master(_bk)?|pl\s*to\s*export|pl\s*print|pl\s*with\s*markup|
-      \d{4}\s+hopewood\s+pricelist|wholesale|retail|sheet\d+)$
+      \d{4}\s+hopewood\s+pricelist|wholesale|retail|sheet\d+|
+      footer\s*summary|price|description|read\s*first!?|
+      instructions?)$
     """
 )
+
+# Option notes / upcharges wrongly captured as "current collection"
+_JUNK_COLLECTION_RE = re.compile(
+    r"""(?ix)
+    add\s+metal\s+leg|
+    door\s+options?|
+    inset\s+panel|
+    replace\s+glass|
+    adjustable\s+shelf|
+    for\s+matching\s+bar\s+stools|
+    see\s+seating|
+    top\s+is\s+inset|
+    two\s+tone|
+    \$50/|
+    markup|
+    subject\s+to\s+change|
+    please\s+note|
+    ^price$|
+    ^description$|
+    ^options?$
+    """
+)
+
+# Millers sheet-name noise
+_MULT_PREFIX_RE = re.compile(r"(?i)^mult-?")
+
+# Vendor defaults when collection is empty (floor-friendly)
+_VENDOR_DEFAULT_COLLECTION = {
+    "FN Chair": "Seating",
+    "Genuine Oak": "Casegoods",
+}
 
 
 def standardize_collection(val: Any, *, vendor: str = "") -> Optional[str]:
     if val is None:
-        return None
+        # vendor default only when truly empty
+        return _VENDOR_DEFAULT_COLLECTION.get(vendor or "")
     s = str(val).strip()
     if not s or s.lower() in {"nan", "none"}:
-        return None
+        return _VENDOR_DEFAULT_COLLECTION.get(vendor or "")
+
     s = _TRAILING_INDEX_RE.sub("", s).strip()
     s = re.sub(r",?\s*continued\s*$", "", s, flags=re.I).strip()
+
     if _SHEET_COLLECTION_RE.match(s):
-        return None  # sheet name, not a product collection
+        return _VENDOR_DEFAULT_COLLECTION.get(vendor or "")
     if re.match(r"(?i)^col_\d+", s):
-        return None
+        return _VENDOR_DEFAULT_COLLECTION.get(vendor or "")
+
+    # Option / instruction lines stuck as collection (common on Hope Wood)
+    if _JUNK_COLLECTION_RE.search(s):
+        return _VENDOR_DEFAULT_COLLECTION.get(vendor or "")
+    if len(s) > 70:
+        return _VENDOR_DEFAULT_COLLECTION.get(vendor or "")
+
+    # Mult-Gun → Gun Cabinets, Mult-Bookcases → Bookcases
+    if _MULT_PREFIX_RE.match(s):
+        rest = _MULT_PREFIX_RE.sub("", s).strip()
+        aliases = {
+            "gun": "Gun Cabinets",
+            "guns": "Gun Cabinets",
+            "bookcases": "Bookcases",
+            "tvconsoles": "TV Consoles",
+            "tv consoles": "TV Consoles",
+        }
+        key = rest.lower().replace(" ", "")
+        s = aliases.get(key) or aliases.get(rest.lower()) or rest
+        if s.lower() in {"tvconsoles", "tvconsole"}:
+            s = "TV Consoles"
+
+    # "Edgefield UNFINISHED" → "Edgefield"
+    s = re.sub(r"(?i)\s*[-–]?\s*(unfinished|finished)\s*$", "", s).strip()
+    # Wood species mistaken as collection (Millers nested headers)
+    if re.match(
+        r"(?i)^(oak|rustic|qswo|walnut|cherry|maple|hickory|elm|br/|chy/)",
+        s,
+    ) and not re.search(r"(?i)collection|series|suite", s):
+        if not re.search(r"(?i)desk|cabinet|table|bed|chair", s):
+            return _VENDOR_DEFAULT_COLLECTION.get(vendor or "")
+
     # Title Case short all-caps collections
     if s.isupper() and 3 < len(s) < 40:
         s = s.title()
-    return s or None
+
+    return s or _VENDOR_DEFAULT_COLLECTION.get(vendor or "")
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +597,12 @@ def standardize_row(row: dict, *, default_multiplier: float = 2.7) -> Optional[d
     if finish is None:
         finish = "finished"
 
-    collection = standardize_collection(out.get("collection"), vendor=vendor or "")
+    collection = standardize_collection(
+        out.get("collection"), vendor=vendor or ""
+    )
+    # If still empty, apply vendor default
+    if not collection and vendor in _VENDOR_DEFAULT_COLLECTION:
+        collection = _VENDOR_DEFAULT_COLLECTION[vendor]
     dims = standardize_text(out.get("dimensions"))
     option_key = standardize_text(out.get("option_key"))
     notes = standardize_text(out.get("notes"))

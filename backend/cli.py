@@ -93,6 +93,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_db(sp_std)
 
+    sp_bak = sub.add_parser(
+        "backup-db",
+        help="Copy master_pricebook.db to ~/Documents/FAF-pricebook-backups (local only)",
+    )
+    add_db(sp_bak)
+
     args = p.parse_args(argv)
     svc = PriceBookService(db_path=getattr(args, "db", None))
     svc.init()
@@ -209,6 +215,12 @@ def main(argv: list[str] | None = None) -> int:
         print("final stats:", svc.stats())
         print(svc.vendor_summary().to_string(index=False))
         return 0
+
+    if args.cmd == "backup-db":
+        import subprocess
+
+        script = Path(__file__).resolve().parent.parent / "scripts" / "backup_db.py"
+        return subprocess.call([sys.executable, str(script)])
 
     return 1
 
