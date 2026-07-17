@@ -370,26 +370,14 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
         help="You can select multiple files at once.",
     )
 
-    g1, g2 = st.columns(2)
-    with g1:
-        commit_mode = st.radio(
-            "When loading into master",
-            ["replace_vendor", "upsert"],
-            format_func=lambda m: {
-                "replace_vendor": "Replace this builder’s whole catalog (recommended)",
-                "upsert": "Upsert only (update matching SKUs)",
-            }[m],
-            horizontal=True,
-            key="drop_mode",
-            index=0,
-        )
-    with g2:
-        prefer_wb_markup = st.checkbox(
-            "Prefer workbook Markup sheet when mult not set manually",
-            value=False,
-            key="drop_use_wb_markup",
-            help="If unchecked, uses each builder’s saved mult, else 2.7 (Genuine Oak usually 1.7 saved).",
-        )
+    # Always replace each builder’s catalog (one builder = one book)
+    commit_mode = "replace_vendor"
+    prefer_wb_markup = st.checkbox(
+        "Prefer workbook Markup sheet when mult not set manually",
+        value=False,
+        key="drop_use_wb_markup",
+        help="If unchecked, uses each builder’s saved mult, else 2.7 (Genuine Oak usually 1.7 saved).",
+    )
 
     if not uploads:
         st.info("Drop one or more builder price files above to begin.")
@@ -595,10 +583,13 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
                     "File": p["filename"],
                     "Rows": len(p["rows"]),
                     "Multiplier": p["multiplier"],
-                    "Mode": commit_mode,
                 }
                 for p in by_vendor.values()
             ]
+            st.caption(
+                "Loading **replaces each builder’s whole catalog** "
+                "(one builder = one book)."
+            )
             st.dataframe(
                 pd.DataFrame(summary_rows),
                 use_container_width=True,
