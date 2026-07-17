@@ -481,3 +481,96 @@ class PriceBookRepository:
                 "SELECT name, multiplier, notes, updated_at FROM vendors ORDER BY name",
                 conn,
             )
+
+    def standardize_all(self, *, default_multiplier: float = DEFAULT_MULTIPLIER) -> dict:
+        """
+        Rewrite every pricebook row through backend.standardize rules.
+        Drops unrecoverable junk rows. Recomputes adjusted_price.
+        """
+        from backend.standardize import standardize_row, VENDOR_CANON
+
+        with self._conn() as conn:
+            cur = conn.execute(f"SELECT {', '.join(SELECT_COLS)} FROM pricebook")
+            cols = [d[0] for d in cur.description]
+            raw_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+            kept = 0
+            dropped = 0
+            updated = 0
+            to_delete: list[int] = []
+            updates: list[tuple] = []
+
+            for r in raw_rows:
+                rid = r.get("id")
+                mult = r.get("multiplier") or default_multiplier
+                cleaned = standardize_row(r, default_multiplier=float(mult))
+                if cleaned is None:
+                    if rid is not None:
+                        to_delete.append(int(rid))
+                    dropped += 1
+                    continue
+                kept += 1
+                # Detect change
+                changed = False
+                for k in PRICEBOOK_COLS:
+                    old, new = r.get(k), cleaned.get(k)
+                    if old != new and not (
+                        old is None and new is None
+                    ) and not (
+                        isinstance(old, float)
+                        and isinstance(new, float)
+                        and abs(old - new) < 1e-9
+                    ):
+                        # string normalize compare
+                        if str(old or "") != str(new or ""):
+                            changed = True
+                            break
+                if changed and rid is not None:
+                    updates.append(
+                        tuple(cleaned.get(c) for c in PRICEBOOK_COLS) + (int(rid),)
+                    )
+                    updated += 1
+
+            if to_delete:
+                # sqlite variable limit — chunk
+                for i in range(0, len(to_delete), 400):
+                    chunk = to_delete[i : i + 400]
+                    placeholders = ",".join("?" * len(chunk))
+                    conn.execute(
+                        f"DELETE FROM pricebook WHERE id IN ({placeholders})", chunk
+                    )
+
+            if updates:
+                set_clause = ", ".join(f"{c}=?" for c in PRICEBOOK_COLS)
+                conn.executemany(
+                    f"UPDATE pricebook SET {set_clause} WHERE id=?",
+                    updates,
+                )
+
+            # Normalize vendor table names
+            for old_key, canon in VENDOR_CANON.items():
+                # rename any vendor row matching key
+                conn.execute(
+                    """
+                    UPDATE vendors SET name = ?
+                    WHERE lower(name) = ? AND name != ?
+                    """,
+                    (canon, old_key, canon),
+                )
+            # drop vendor settings with no pricebook rows
+            conn.execute(
+                """
+                DELETE FROM vendors WHERE name NOT IN (
+                    SELECT DISTINCT vendor FROM pricebook WHERE vendor IS NOT NULL
+                )
+                """
+            )
+            conn.commit()
+
+        return {
+            "scanned": len(raw_rows),
+            "kept": kept,
+            "updated": updated,
+            "dropped": dropped,
+            "remaining": self.row_count(),
+        }

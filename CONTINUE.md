@@ -3,7 +3,8 @@
 **Updated:** 2026-07-17  
 **Folder:** `~/FAF-pricebook`  
 **GitHub (private):** https://github.com/Koffeekinggamer/faf-pricebook-system  
-**Status:** Master data cleaned · app ready · **~41,200 rows · 13 vendors**
+**Status:** LIVE + **standardized** · **~29,749 clean rows · 13 vendors**  
+(Junk matrix columns removed; all vendors share one field shape — see **STANDARDS.md**)
 
 ## Run (production)
 
@@ -27,19 +28,19 @@ CLI smoke:
 
 | Vendor | Rows | Mult | Notes |
 |--------|------|------|-------|
-| Hope Wood | 14,933 | 2.7 | unfinished + finished × 5 woods |
-| Genuine Oak | 9,095 | **1.7** | workbook Markup sheet |
-| Millers Woodshop | 5,852 | 2.7 | 2026 only (MWS 2023 removed) |
-| Windy Acres Furniture | 3,504 | 2.7 | |
-| FN Chair | 3,067 | 2.7 | PL To Export; item name = SKU |
-| Rainbow Bedding | 1,540 | 2.7 | **Jan 2026 wholesale** bases |
-| Premier Woodcraft | 1,028 | 2.7 | wholesale under markup formulas |
-| Charleston Forge | 849 | 2.7 | |
-| LuxHome | 558 | 2.7 | fabric grades; AJ addon = identical skip |
-| Patio Kraft | 452 | 2.7 | color tiers Standard/Bright/Woodgrain |
-| Beaverdam | 143 | 2.7 | |
-| GVWI | 93 | 2.7 | |
-| LAMB | 86 | 2.7 | |
+| Hope Wood | 14,931 | 2.7 | 5 woods × unfinished/finished |
+| Genuine Oak | 5,613 | **1.7** | woods slash-normalized; Master dups collapsed |
+| FN Chair | 3,067 | 2.7 | item name = SKU; wood groups canonical |
+| Windy Acres Furniture | 1,612 | 2.7 | FINISHED cols → Wood Tier N |
+| Millers Woodshop | 1,225 | 2.7 | junk `col_*` matrix cols removed |
+| Premier Woodcraft | 1,016 | 2.7 | 2 wood tiers, wholesale base |
+| Rainbow Bedding | 708 | 2.7 | Jan wholesale; size options clean |
+| LuxHome | 558 | 2.7 | Standard/Premium/Ultra/Genuine |
+| Patio Kraft | 452 | 2.7 | Standard/Bright/Woodgrain colors |
+| Charleston Forge | 248 | 2.7 | junk cols removed |
+| Beaverdam | 143 | 2.7 | flat SKU+price |
+| GVWI | 93 | 2.7 | flat SKU+price |
+| LAMB | 83 | 2.7 | wood groups canonical |
 
 ## Decisions locked in
 

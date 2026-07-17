@@ -81,6 +81,12 @@ def main(argv: list[str] | None = None) -> int:
     vp = sub.add_parser("vendors", help="Vendor summary table")
     add_db(vp)
 
+    sp_std = sub.add_parser(
+        "standardize",
+        help="Rewrite master rows to canonical vendor/species/finish/collection shape",
+    )
+    add_db(sp_std)
+
     args = p.parse_args(argv)
     svc = PriceBookService(db_path=getattr(args, "db", None))
     svc.init()
@@ -178,6 +184,17 @@ def main(argv: list[str] | None = None) -> int:
             print("(no vendors)")
         else:
             print(df.to_string(index=False))
+        return 0
+
+    if args.cmd == "standardize":
+        report = svc.standardize_master()
+        print("Standardize complete:", report)
+        print("stats:", svc.stats())
+        # optional: collapse dups created by name normalization
+        dups = svc.cleanup_duplicates(dry_run=False)
+        print("post-standardize dup cleanup:", dups)
+        print("final stats:", svc.stats())
+        print(svc.vendor_summary().to_string(index=False))
         return 0
 
     return 1

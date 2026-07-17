@@ -160,6 +160,11 @@ class PriceBookService:
         self.ensure_ready()
         return self.repo.recompute_adjusted(vendor=vendor)
 
+    def standardize_master(self) -> dict:
+        """Apply canonical field rules to every master row (in place)."""
+        self.ensure_ready()
+        return self.repo.standardize_all()
+
     def resolve_multiplier(
         self,
         vendor: str = "",

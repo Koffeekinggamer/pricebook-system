@@ -10,6 +10,7 @@ import pandas as pd
 
 from backend.config import DEFAULT_MULTIPLIER, DEFAULT_PRICE_BASIS
 from backend.models import COLUMN_ALIASES
+from backend.standardize import standardize_rows
 
 
 def norm_col(name: str) -> str:
@@ -130,7 +131,8 @@ def normalize_dataframe(
             "imported_at": now,
         })
 
-    return rows
+    # Canonical shape for every import path
+    return standardize_rows(rows, default_multiplier=multiplier)
 
 
 def long_df_to_rows(
