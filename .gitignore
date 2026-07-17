@@ -38,3 +38,4 @@ credentials.json
 # Temp / analysis
 /tmp/
 *.log
+smoke_test_quote.pdf
