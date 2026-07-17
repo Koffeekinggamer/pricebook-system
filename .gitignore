@@ -35,6 +35,9 @@ credentials.json
 # Streamlit
 .streamlit/secrets.toml
 
+# Floor iPad pins (local preference)
+.floor_favorites.json
+
 # Temp / analysis
 /tmp/
 *.log

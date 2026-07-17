@@ -9,20 +9,50 @@ Run:  streamlit run pricebook_app.py
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
+import sys
+
 from backend import PriceBookService
 from backend.auth import check_login, credentials_source_hint
-from backend.config import DEFAULT_MULTIPLIER, DEFAULT_SEARCH_LIMIT
+from backend.config import APP_DIR, DEFAULT_MULTIPLIER, DEFAULT_SEARCH_LIMIT
+
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
 
 st.set_page_config(
     page_title="FAF Price Book",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# iPad / phone-friendly density
+st.markdown(
+    """
+    <style>
+      /* Larger tap targets on touch devices */
+      @media (max-width: 900px) {
+        .stTextInput input, .stSelectbox div[data-baseweb="select"] {
+          min-height: 2.6rem;
+          font-size: 1.05rem !important;
+        }
+        div[data-testid="stDataFrame"] { font-size: 0.95rem; }
+        .block-container { padding-top: 1rem; padding-left: 0.8rem; padding-right: 0.8rem; }
+        button { min-height: 2.5rem; }
+      }
+      /* Favorite chip row */
+      .faf-fav-row button { margin-right: 0.25rem; margin-bottom: 0.25rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+_FAVORITES_PATH = APP_DIR / ".floor_favorites.json"
 
 # ---------------------------------------------------------------------------
 # Login gate
@@ -101,84 +131,51 @@ def _bytes(upload) -> bytes:
 
 
 def _last_backup_hint() -> str:
-    backup_dir = Path.home() / "Documents" / "FAF-pricebook-backups"
-    if not backup_dir.is_dir():
-        return "No backup yet"
-    files = sorted(backup_dir.glob("master_pricebook-*.db"), key=lambda p: p.stat().st_mtime)
-    if not files:
-        return "No backup yet"
-    latest = files[-1]
+    try:
+        from scripts.backup_db import list_backups
+    except Exception:
+        backup_dir = Path.home() / "Documents" / "FAF-pricebook-backups"
+        if not backup_dir.is_dir():
+            return "No backup yet"
+        files = sorted(
+            backup_dir.glob("master_pricebook-*.db"),
+            key=lambda p: p.stat().st_mtime,
+        )
+        if not files:
+            return "No backup yet"
+        latest = files[-1]
+    else:
+        files = list_backups(1)
+        if not files:
+            return "No backup yet"
+        latest = files[0]
     age = datetime.fromtimestamp(latest.stat().st_mtime).strftime("%b %d %I:%M %p")
     return f"{latest.name} · {age}"
 
 
-def money_cols(df: pd.DataFrame):
-    return {
-        "base_price": st.column_config.NumberColumn("Wholesale", format="$%.2f"),
-        "adjusted_price": st.column_config.NumberColumn(
-            "RETAIL", format="$%.2f", help="What the customer pays (base × mult)"
-        ),
-        "unit_retail": st.column_config.NumberColumn("Each $", format="$%.2f"),
-        "line_total": st.column_config.NumberColumn("Line $", format="$%.2f"),
-        "multiplier": st.column_config.NumberColumn("Mult", format="%.2f"),
-        "qty": st.column_config.NumberColumn("Qty", min_value=0.1, step=1.0),
-        "line_discount_pct": st.column_config.NumberColumn(
-            "Disc %", min_value=0.0, max_value=100.0, step=1.0, format="%.1f"
-        ),
-    }
+def _load_favorites() -> list[str]:
+    if not _FAVORITES_PATH.is_file():
+        return []
+    try:
+        data = json.loads(_FAVORITES_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [str(x) for x in data if str(x).strip()]
+    except Exception:
+        pass
+    return []
 
 
-def render_commit(rows: list[dict], source_name: str, vendor_hint: str = "") -> None:
-    preview_df = pd.DataFrame(rows)
-    st.markdown(f"**{len(preview_df):,}** rows ready")
-    if preview_df.empty:
-        st.warning("Nothing to import.")
-        return
-    show = [
-        c
-        for c in [
-            "vendor",
-            "collection",
-            "part_number",
-            "description",
-            "species",
-            "finish_state",
-            "base_price",
-            "multiplier",
-            "adjusted_price",
-        ]
-        if c in preview_df.columns
-    ]
-    st.dataframe(preview_df[show].head(40), use_container_width=True)
-
-    mode = st.radio(
-        "Commit mode",
-        ["replace_vendor", "upsert", "append"],
-        format_func=lambda m: {
-            "replace_vendor": "Replace this builder (recommended — one catalog per builder)",
-            "upsert": "Upsert (smart update, no full replace)",
-            "append": "Append always (can create duplicates)",
-        }[m],
-        horizontal=True,
-        key=f"mode_{source_name}",
-        index=0,
+def _save_favorites(names: list[str]) -> None:
+    clean = []
+    seen = set()
+    for n in names:
+        n = str(n).strip()
+        if n and n not in seen:
+            seen.add(n)
+            clean.append(n)
+    _FAVORITES_PATH.write_text(
+        json.dumps(clean, indent=2), encoding="utf-8"
     )
-    st.caption(
-        "Policy: **one builder = one vendor**. Re-importing Premier replaces all Premier rows."
-    )
-    if st.button("Commit to master", type="primary", key=f"go_{source_name}"):
-        result = svc.add_rows(rows, mode=mode)
-        vend = vendor_hint or (rows[0].get("vendor") if rows else "")
-        if vend and rows:
-            svc.set_vendor_multiplier(
-                vend,
-                float(rows[0].get("multiplier") or DEFAULT_MULTIPLIER),
-            )
-        st.success(
-            f"Done · total {result.get('total', 0):,} · "
-            f"in {result.get('inserted', 0):,} · up {result.get('updated', 0):,} · "
-            f"del {result.get('deleted', 0):,}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -234,8 +231,8 @@ tab_search, tab_import, tab_vendors, tab_admin = st.tabs(
 with tab_search:
     st.subheader("Find a price")
     st.caption(
-        "Type a **part number** or words · exact SKU ranks first · "
-        "dust covers sink when you type a short code (VECG before VECG-DC)."
+        "Type a **part number** or words · SKU codes rank first · "
+        "finished items preferred on the floor."
     )
 
     q = st.text_input(
@@ -245,8 +242,28 @@ with tab_search:
         label_visibility="collapsed",
     )
 
-    vendors = ["All"] + svc.list_vendors()
-    f1, f2, f3 = st.columns([1.3, 1.5, 1.2])
+    all_vendors = svc.list_vendors()
+    favorites = [v for v in _load_favorites() if v in all_vendors]
+
+    # Quick-pick favorite builders (iPad-friendly)
+    if favorites:
+        st.caption("Pinned builders")
+        fav_cols = st.columns(min(len(favorites), 6))
+        for i, name in enumerate(favorites[:12]):
+            with fav_cols[i % len(fav_cols)]:
+                if st.button(name, key=f"fav_pick_{i}", use_container_width=True):
+                    st.session_state["sv"] = name
+                    st.session_state["sc"] = "All"
+                    st.session_state["_search_coll_builder"] = name
+                    st.rerun()
+
+    vendors = ["All"] + all_vendors
+    # Put favorites first after All for faster floor pick
+    if favorites:
+        rest = [v for v in all_vendors if v not in favorites]
+        vendors = ["All"] + favorites + rest
+
+    f1, f2, f3, f4 = st.columns([1.4, 1.4, 1.0, 0.9])
     with f1:
         vf = st.selectbox("Builder", vendors, key="sv")
     with f2:
@@ -264,6 +281,18 @@ with tab_search:
         # Floor default: finished only
         finish_opts = ["finished", "All", "unfinished"]
         ff = st.selectbox("Finish", finish_opts, index=0, key="sf")
+    with f4:
+        st.write("")  # align with selectboxes
+        st.write("")
+        if vf != "All":
+            if vf in favorites:
+                if st.button("Unpin", key="unpin_builder", use_container_width=True):
+                    _save_favorites([x for x in favorites if x != vf])
+                    st.rerun()
+            else:
+                if st.button("Pin builder", key="pin_builder", use_container_width=True):
+                    _save_favorites(favorites + [vf])
+                    st.rerun()
 
     # Don't dump the whole book when search is empty — unless a builder is chosen
     if not (q or "").strip() and vf == "All":
@@ -906,38 +935,93 @@ with tab_admin:
     st.caption(f"Database: `{svc.path}`")
     st.caption(f"Last backup: {_last_backup_hint()}")
 
-    st.markdown("##### Maintenance")
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        if st.button("Backup DB now"):
+    st.markdown("##### Backup DB")
+    st.caption(
+        "Saves a snapshot under **Documents/FAF-pricebook-backups**. "
+        "Weekly auto-backup: run `scripts/install_weekly_backup.sh` once on this Mac."
+    )
+    b1, b2 = st.columns([1, 1])
+    with b1:
+        if st.button("Backup DB now", type="primary", use_container_width=True):
+            try:
+                from scripts.backup_db import backup_now
+
+                dest = backup_now()
+                st.success(f"Saved `{dest.name}`")
+            except Exception as exc:
+                st.error(f"Backup failed: {exc}")
+    with b2:
+        if st.button("Install weekly backup (Sunday 6 AM)", use_container_width=True):
             import subprocess
             import sys
 
-            script = Path(__file__).resolve().parent / "scripts" / "backup_db.py"
-            rc = subprocess.call([sys.executable, str(script)])
-            st.success("Backup saved") if rc == 0 else st.error("Backup failed")
-    with m2:
+            install = Path(__file__).resolve().parent / "scripts" / "install_weekly_backup.sh"
+            rc = subprocess.call(["/bin/zsh", str(install)])
+            if rc == 0:
+                st.success("Weekly LaunchAgent installed (Sunday 6:00 AM).")
+            else:
+                st.error("Install failed — run scripts/install_weekly_backup.sh in Terminal.")
+
+    try:
+        from scripts.backup_db import list_backups, restore_from
+
+        backups = list_backups(30)
+    except Exception:
+        backups = []
+
+    if backups:
+        st.markdown("##### Restore from backup")
+        labels = [
+            f"{p.name}  ·  {datetime.fromtimestamp(p.stat().st_mtime).strftime('%b %d %I:%M %p')}"
+            for p in backups
+        ]
+        pick = st.selectbox("Backup file", labels, key="restore_pick")
+        confirm = st.checkbox(
+            "I understand restore replaces the live price book",
+            key="restore_confirm",
+        )
+        if st.button("Restore selected backup", type="secondary"):
+            if not confirm:
+                st.warning("Check the confirmation box first.")
+            else:
+                idx = labels.index(pick)
+                try:
+                    live = restore_from(backups[idx], also_backup_current=True)
+                    # Clear cached service so next load reopens DB connection state
+                    get_service.clear()
+                    st.success(
+                        f"Restored `{backups[idx].name}` → `{live.name}`. "
+                        "Reloading…"
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Restore failed: {exc}")
+    else:
+        st.caption("No backups yet — click **Backup DB now**.")
+
+    st.markdown("##### Maintenance")
+    m1, m2, m3 = st.columns(3)
+    with m1:
         if st.button("Re-standardize master"):
             report = svc.standardize_master()
             st.write(report)
             st.success("Standardize complete")
-    with m3:
+    with m2:
         if st.button("Scan duplicates"):
             dups = svc.find_duplicates(50)
             if dups.empty:
                 st.success("No duplicate identity groups.")
             else:
                 st.dataframe(dups, use_container_width=True)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Dry-run cleanup (keep newest)"):
+    with m3:
+        if st.button("Dry-run cleanup"):
             report = svc.cleanup_duplicates(dry_run=True)
             st.write(report)
-    with c2:
-        if st.button("Execute cleanup", type="primary"):
-            report = svc.cleanup_duplicates(dry_run=False)
-            st.success(report)
+
+    if st.button("Execute cleanup (keep newest)", type="primary"):
+        report = svc.cleanup_duplicates(dry_run=False)
+        st.success(report)
+        st.rerun()
 
     st.markdown("##### Source files in master")
     sources = svc.list_source_files()
@@ -947,19 +1031,25 @@ with tab_admin:
             n = svc.delete_by_source(src)
             st.warning(f"Removed {n:,} rows")
 
-    st.markdown("##### CLI cheat sheet")
+    st.markdown("##### Deploy")
+    st.caption(
+        "Permanent hosting: Streamlit Community Cloud from GitHub "
+        "`Koffeekinggamer/pricebook-system` · main file `pricebook_app.py`. "
+        "See **DEPLOY.md**. Public tunnel (this Mac on): `scripts/public_tunnel.sh`."
+    )
+
+    st.markdown("##### CLI")
     st.code(
         """
 source ~/FAF-pricebook/.venv/bin/activate
 python -m backend.cli stats
 python -m backend.cli search "oak nightstand"
-python -m backend.cli import-xlsx FILE --vendor NAME --mode replace_vendor
-python -m backend.cli backup-db
-python -m backend.cli standardize
+python scripts/backup_db.py backup
+python scripts/backup_db.py list
+python scripts/backup_db.py restore --file master_pricebook-YYYYMMDD-HHMMSS.db
         """.strip()
     )
 
 st.caption(
-    "FAF Price Book · Foothills Amish Furniture · "
-    "Search · Drop files · Vendors · one builder = one catalog"
+    "FAF Price Book · Search · Drop files · Vendors · one builder = one catalog"
 )

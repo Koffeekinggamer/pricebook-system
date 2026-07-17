@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union  # noqa: F401 — Optional used throughout
@@ -121,15 +122,42 @@ class PriceBookRepository:
         params: list = []
         q = (query or "").strip()
 
+        q_lower = q.lower()
+        # Fast SKU path: single compact token → prefer part_number prefix/exact
+        # (showroom floor typing VE-CG / GO-AVNNS / LA-ASH)
+        sku_like = bool(
+            q
+            and " " not in q
+            and len(q) <= 36
+            and re.match(r"^[A-Za-z0-9][A-Za-z0-9\-_/.]*$", q)
+        )
+
         if q:
-            for token in q.split():
-                like = f"%{token}%"
+            if sku_like:
+                # Part # first (exact / prefix / contains), then description fallback
                 clauses.append(
-                    "(vendor LIKE ? OR collection LIKE ? OR part_number LIKE ? "
-                    "OR description LIKE ? OR species LIKE ? OR dimensions LIKE ? "
-                    "OR notes LIKE ? OR source_file LIKE ? OR finish_state LIKE ?)"
+                    "(lower(trim(coalesce(part_number,''))) = ? "
+                    "OR lower(trim(coalesce(part_number,''))) LIKE ? "
+                    "OR lower(trim(coalesce(part_number,''))) LIKE ? "
+                    "OR lower(coalesce(description,'')) LIKE ?)"
                 )
-                params.extend([like] * 9)
+                params.extend(
+                    [
+                        q_lower,
+                        q_lower + "%",
+                        "%" + q_lower + "%",
+                        "%" + q_lower + "%",
+                    ]
+                )
+            else:
+                for token in q.split():
+                    like = f"%{token}%"
+                    clauses.append(
+                        "(vendor LIKE ? OR collection LIKE ? OR part_number LIKE ? "
+                        "OR description LIKE ? OR species LIKE ? OR dimensions LIKE ? "
+                        "OR notes LIKE ? OR source_file LIKE ? OR finish_state LIKE ?)"
+                    )
+                    params.extend([like] * 9)
 
         if collection and collection != "All":
             clauses.append("collection = ?")
@@ -145,7 +173,6 @@ class PriceBookRepository:
         cols = ", ".join(SELECT_COLS)
 
         # Ranking params (query as a whole, case-insensitive)
-        q_lower = q.lower()
         order_params: list = []
         if q_lower:
             order_sql = """
