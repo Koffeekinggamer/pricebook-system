@@ -85,6 +85,15 @@ python -m backend.cli set-multiplier "FVWW" 2.7
 
 **Identity** = vendor + collection + part + species + finish + option + dimensions
 
+## Master row standard
+
+All vendors share one field shape (wholesale base × mult → retail).  
+See **STANDARDS.md**. Re-run anytime:
+
+```bash
+.venv/bin/python -m backend.cli standardize
+```
+
 ## Layout rules
 
 See `LAYOUT_SYSTEM.md`. Gold pattern:
