@@ -1098,79 +1098,177 @@ with tab_quotes:
                         st.rerun()
 
 # ---------------------------------------------------------------------------
-# VENDORS
+# VENDORS — edit multipliers
 # ---------------------------------------------------------------------------
 with tab_vendors:
-    st.subheader("Builders & retail multipliers")
-    st.caption(
-        "One row per builder. Change the mult, then **Apply** to recompute that builder’s retail."
+    st.subheader("Modify builder multipliers")
+    st.markdown(
+        """
+**Retail = wholesale × multiplier.**  
+Each builder has its own mult (e.g. Genuine Oak **1.7**, most others **2.7**).
+
+1. Edit the **Multiplier** column below  
+2. Click **Save multipliers & update retail prices**
+        """
     )
+
     summary = svc.vendor_summary()
     if summary.empty:
-        st.info("No builders in master yet.")
+        st.info("No builders in master yet — import files under **Drop files** first.")
     else:
-        # Floor-facing table
-        nice = summary.rename(
+        edit_df = summary[
+            [
+                c
+                for c in [
+                    "vendor",
+                    "rows",
+                    "collections",
+                    "saved_mult",
+                    "avg_mult",
+                    "min_base",
+                    "max_base",
+                ]
+                if c in summary.columns
+            ]
+        ].copy()
+        # Prefer saved_mult; fall back to avg_mult
+        edit_df["Multiplier"] = edit_df.apply(
+            lambda r: float(
+                r["saved_mult"]
+                if pd.notna(r.get("saved_mult"))
+                else (r.get("avg_mult") or DEFAULT_MULTIPLIER)
+            ),
+            axis=1,
+        )
+        edit_df = edit_df.rename(
             columns={
                 "vendor": "Builder",
                 "rows": "Items",
                 "collections": "Collections",
-                "avg_mult": "Avg mult",
-                "saved_mult": "Saved mult",
                 "min_base": "Min wholesale",
                 "max_base": "Max wholesale",
             }
         )
-        show = [
+        show_cols = [
             c
             for c in [
                 "Builder",
                 "Items",
                 "Collections",
-                "Saved mult",
+                "Multiplier",
                 "Min wholesale",
                 "Max wholesale",
             ]
-            if c in nice.columns
+            if c in edit_df.columns
         ]
-        st.dataframe(
-            nice[show],
+        edited = st.data_editor(
+            edit_df[show_cols],
             use_container_width=True,
             hide_index=True,
+            num_rows="fixed",
             column_config={
-                "Min wholesale": st.column_config.NumberColumn(format="$%.0f"),
-                "Max wholesale": st.column_config.NumberColumn(format="$%.0f"),
-                "Saved mult": st.column_config.NumberColumn(format="%.2f"),
-                "Items": st.column_config.NumberColumn(format="%d"),
+                "Builder": st.column_config.TextColumn(disabled=True),
+                "Items": st.column_config.NumberColumn(format="%d", disabled=True),
+                "Collections": st.column_config.NumberColumn(
+                    format="%d", disabled=True
+                ),
+                "Multiplier": st.column_config.NumberColumn(
+                    "Multiplier",
+                    min_value=0.1,
+                    max_value=20.0,
+                    step=0.1,
+                    format="%.2f",
+                    help="Edit this — then click Save below",
+                    disabled=False,
+                ),
+                "Min wholesale": st.column_config.NumberColumn(
+                    format="$%.0f", disabled=True
+                ),
+                "Max wholesale": st.column_config.NumberColumn(
+                    format="$%.0f", disabled=True
+                ),
             },
+            key="vendor_mult_editor",
         )
 
-    st.markdown("##### Change a builder’s multiplier")
-    vlist = svc.list_vendors()
-    if vlist:
-        vv = st.selectbox("Builder", vlist, key="vv")
-        cur = svc.get_vendor_multiplier(vv)
-        nm = st.number_input(
-            "Retail multiplier",
-            0.1,
-            20.0,
-            float(cur),
-            0.1,
-            key="vm",
-            help="Genuine Oak is typically 1.7; most others 2.7",
+        st.caption(
+            "Quick tips: set **2.7** for most Amish builders · **1.7** for Genuine Oak "
+            "(or whatever deal you run)."
         )
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Apply mult & recompute retail", type="primary"):
-                svc.set_vendor_multiplier(vv, float(nm))
-                n = svc.reapply_multiplier(float(nm), vendor=vv)
-                st.success(f"{vv}: mult {nm:g} · {n:,} retail prices updated")
+
+        b1, b2, b3 = st.columns([1.4, 1.0, 1.0])
+        with b1:
+            if st.button(
+                "💾 Save multipliers & update retail prices",
+                type="primary",
+                use_container_width=True,
+            ):
+                updated_builders = 0
+                updated_rows = 0
+                for _, r in edited.iterrows():
+                    builder = str(r["Builder"])
+                    mult = float(r["Multiplier"])
+                    if mult <= 0:
+                        continue
+                    svc.set_vendor_multiplier(
+                        builder,
+                        mult,
+                        notes="Updated from Vendors tab",
+                    )
+                    n = svc.reapply_multiplier(mult, vendor=builder)
+                    updated_builders += 1
+                    updated_rows += int(n or 0)
+                st.success(
+                    f"Saved **{updated_builders}** builders · "
+                    f"recomputed **{updated_rows:,}** retail prices"
+                )
                 st.rerun()
-        with c2:
-            if st.button("Remove builder from book", type="secondary"):
-                n = svc.delete_by_vendor(vv)
-                st.warning(f"Deleted {n:,} rows for {vv}")
+        with b2:
+            if st.button("Set all to 2.7", use_container_width=True):
+                for v in svc.list_vendors():
+                    svc.set_vendor_multiplier(v, 2.7, notes="Bulk set 2.7")
+                    svc.reapply_multiplier(2.7, vendor=v)
+                st.success("All builders set to 2.7")
                 st.rerun()
+        with b3:
+            if st.button("Genuine Oak → 1.7", use_container_width=True):
+                if "Genuine Oak" in svc.list_vendors():
+                    svc.set_vendor_multiplier(
+                        "Genuine Oak", 1.7, notes="Typical Genuine Oak deal"
+                    )
+                    n = svc.reapply_multiplier(1.7, vendor="Genuine Oak")
+                    st.success(f"Genuine Oak → 1.7 ({n:,} rows)")
+                    st.rerun()
+                else:
+                    st.warning("Genuine Oak not in master.")
+
+        # Example: show one SKU before/after for selected builder
+        st.markdown("##### Check a price after mult change")
+        vlist = svc.list_vendors()
+        cv1, cv2 = st.columns([1.2, 2])
+        with cv1:
+            check_v = st.selectbox("Builder", vlist, key="vcheck")
+        with cv2:
+            sample = svc.search("", vendor=check_v, finish_state="finished", limit=5)
+            if sample.empty:
+                sample = svc.search("", vendor=check_v, limit=5)
+            if not sample.empty:
+                s = sample.iloc[0]
+                st.write(
+                    f"**{s.get('part_number')}** · {s.get('description') or ''} · "
+                    f"{s.get('species') or ''}  \n"
+                    f"Wholesale **${float(s.get('base_price') or 0):,.2f}** × "
+                    f"**{float(s.get('multiplier') or 0):.2f}** = "
+                    f"Retail **${float(s.get('adjusted_price') or 0):,.2f}**"
+                )
+
+        st.divider()
+        st.markdown("##### Remove a builder from the book")
+        vv = st.selectbox("Builder to remove", vlist, key="vv_del")
+        if st.button("Remove builder from book", type="secondary"):
+            n = svc.delete_by_vendor(vv)
+            st.warning(f"Deleted {n:,} rows for {vv}")
+            st.rerun()
 
 # ---------------------------------------------------------------------------
 # ADMIN
