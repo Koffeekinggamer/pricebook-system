@@ -51,9 +51,39 @@ CLI smoke:
 - **Genuine Oak** stays **1.7×** per builder Markup sheet.
 - **Local DB** gitignored (never on GitHub).
 
-## Resume prompt
+## Next prompt (copy-paste)
 
 ```
-Continue FAF Pricebook at ~/FAF-pricebook — live system.
-Next: [your ask].
+Continue FAF Pricebook at ~/FAF-pricebook.
+
+## Context (do not re-litigate)
+- Streamlit + SQLite private multiplier engine for Foothills Amish Furniture
+- Repo (code): https://github.com/Koffeekinggamer/faf-pricebook-system (main, in sync)
+- Local only: master_pricebook.db (~29,749 rows · 13 vendors) — gitignored
+- UI: pricebook_app.py · logic: backend.PriceBookService
+- Standards: STANDARDS.md · layout: LAYOUT_SYSTEM.md · status: CONTINUE.md
+- Default mult 2.7; Genuine Oak 1.7; base = wholesale; retail = base × mult
+- One builder = one vendor (replace_vendor default; never duplicate builders)
+- Imports auto-standardize via backend.standardize
+
+## Builders loaded (one each)
+Hope Wood, Genuine Oak, FN Chair, Windy Acres Furniture, Millers Woodshop,
+Premier Woodcraft, Rainbow Bedding, LuxHome, Patio Kraft, Charleston Forge,
+Beaverdam, GVWI, LAMB
+
+## Run
+cd ~/FAF-pricebook && source .venv/bin/activate && streamlit run pricebook_app.py
+# http://localhost:8501
+
+## Next work (pick highest value / do in order unless I say otherwise)
+1) Floor smoke-test with me: search + quote PDF for real SKUs I name
+2) Improve Windy Acres Wood Tier 1–4 labels if we can map real wood names from the source file
+3) Improve Millers descriptions (many description = part_number only)
+4) Collection cleanup: fewer null collections; drop junk section titles
+5) Optional: private backup path for master_pricebook.db (not GitHub)
+
+Rules: prefer backend over stuffing Streamlit; replace_vendor on re-import;
+keep long-form rows; push code to GitHub when done; never commit *.db.
+
+Next: [tell me what you want — or say “keep going” and start with #1–3]
 ```
