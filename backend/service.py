@@ -207,6 +207,151 @@ class PriceBookService:
         return float(sidebar_mult)
 
     # ------------------------------------------------------------------ import
+    def prepare_drop_file(
+        self,
+        data: bytes,
+        *,
+        filename: str,
+        vendor: str = "",
+        multiplier: Optional[float] = None,
+        use_workbook_markup: bool = False,
+        default_collection: str = "",
+        pdf_max_pages: Optional[int] = None,
+        pdf_strategy_index: int = 0,
+    ) -> dict:
+        """
+        Parse one dropped Excel/PDF into standardized long-form rows.
+
+        Returns dict:
+          vendor, multiplier, detected_markup, rows, notes, error, row_count,
+          sample (list of dicts), sheets_tried
+        """
+        from backend.standardize import resolve_builder_vendor
+
+        self.ensure_ready()
+        name = filename or "upload"
+        vend = (
+            resolve_builder_vendor(vendor or name, filename=name)
+            or (vendor or "").strip()
+            or Path(name).stem
+        )
+        out: dict = {
+            "filename": name,
+            "vendor": vend,
+            "multiplier": float(DEFAULT_MULTIPLIER),
+            "detected_markup": None,
+            "rows": [],
+            "notes": "",
+            "error": "",
+            "row_count": 0,
+            "sample": [],
+            "sheets_tried": [],
+            "kind": "pdf" if name.lower().endswith(".pdf") else "excel",
+        }
+
+        try:
+            if name.lower().endswith(".pdf"):
+                prev = self.imports.preview_pdf(
+                    data,
+                    filename=name,
+                    vendor=vend,
+                    default_collection=default_collection,
+                    multiplier=float(
+                        multiplier
+                        if multiplier is not None
+                        else self.get_vendor_multiplier(vend, default=DEFAULT_MULTIPLIER)
+                    ),
+                    max_pages=pdf_max_pages,
+                    strategy_index=pdf_strategy_index,
+                )
+                if prev.stats.get("likely_scanned"):
+                    out["error"] = "Scanned PDF — little extractable text. Prefer Excel."
+                    out["notes"] = str(prev.stats)
+                    return out
+                if not prev.results and not prev.rows:
+                    out["error"] = "No prices found in PDF."
+                    out["notes"] = str(prev.stats)
+                    return out
+                rows = list(prev.rows or [])
+                detected = None
+                notes = f"PDF strategy · {len(rows)} rows"
+            else:
+                # First pass: detect markup without forcing mult
+                probe = self.imports.preview_excel(
+                    data,
+                    filename=name,
+                    vendor=vend,
+                    default_collection=default_collection,
+                    multiplier=DEFAULT_MULTIPLIER,
+                    use_workbook_markup=False,
+                )
+                detected = probe.detected_markup
+                out["sheets_tried"] = probe.sheets_tried or []
+                out["notes"] = probe.notes or ""
+
+                if multiplier is not None:
+                    mult = float(multiplier)
+                else:
+                    mult = self.resolve_multiplier(
+                        vend,
+                        sidebar_mult=DEFAULT_MULTIPLIER,
+                        detected_markup=detected if use_workbook_markup else None,
+                        prefer_workbook=use_workbook_markup,
+                        prefer_saved_vendor=True,
+                    )
+
+                prev = self.imports.preview_excel(
+                    data,
+                    filename=name,
+                    vendor=vend,
+                    default_collection=default_collection,
+                    multiplier=mult,
+                    use_workbook_markup=False,
+                )
+                rows = list(prev.rows or [])
+                notes = prev.notes or notes
+                out["sheets_tried"] = prev.sheets_tried or out["sheets_tried"]
+                out["detected_markup"] = detected
+
+            # Resolve final mult after we know detected
+            if multiplier is not None:
+                mult = float(multiplier)
+            else:
+                mult = self.resolve_multiplier(
+                    vend,
+                    sidebar_mult=DEFAULT_MULTIPLIER,
+                    detected_markup=out.get("detected_markup")
+                    if use_workbook_markup
+                    else None,
+                    prefer_workbook=use_workbook_markup,
+                    prefer_saved_vendor=True,
+                )
+
+            # Apply builder-specific mult + ensure standardization already on rows
+            for r in rows:
+                r["vendor"] = vend
+                r["source_file"] = name
+                r["multiplier"] = mult
+                r["price_basis"] = r.get("price_basis") or "wholesale"
+                bp = r.get("base_price")
+                if bp is not None:
+                    try:
+                        r["adjusted_price"] = round(float(bp) * mult, 2)
+                    except (TypeError, ValueError):
+                        pass
+
+            out["vendor"] = vend
+            out["multiplier"] = mult
+            out["rows"] = rows
+            out["row_count"] = len(rows)
+            out["notes"] = notes
+            out["sample"] = rows[:8]
+            if not rows:
+                out["error"] = out["error"] or "0 rows parsed — check file layout."
+        except Exception as e:
+            out["error"] = str(e)[:400]
+        return out
+
     def preview_excel(self, data: bytes, **kwargs) -> ExcelImportPreview:
         return self.imports.preview_excel(data, **kwargs)
 
