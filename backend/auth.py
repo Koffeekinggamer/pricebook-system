@@ -17,8 +17,8 @@ from typing import Optional, Tuple
 
 
 # Fallback only if secrets/env are not set — change via .streamlit/secrets.toml
-_DEFAULT_USER = "faf"
-_DEFAULT_PASSWORD = "foothills2026"
+_DEFAULT_USER = "Foothills"
+_DEFAULT_PASSWORD = "Amish"
 
 
 def _sha256(text: str) -> str:
