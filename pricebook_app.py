@@ -126,7 +126,8 @@ def render_commit(rows: list[dict], source_name: str, vendor_hint: str = "") -> 
         vend = vendor_hint or (rows[0].get("vendor") if rows else "")
         if vend and rows:
             svc.set_vendor_multiplier(
-                vend, float(rows[0].get("multiplier") or multiplier)
+                vend,
+                float(rows[0].get("multiplier") or DEFAULT_MULTIPLIER),
             )
         st.success(
             f"Done · total {result.get('total', 0):,} · "
@@ -149,18 +150,18 @@ st.sidebar.caption(
     f"{stats.get('quotes', 0)} quotes"
 )
 
-multiplier = st.sidebar.number_input(
-    "Default multiplier",
-    min_value=0.1,
-    max_value=20.0,
-    value=float(DEFAULT_MULTIPLIER),
-    step=0.1,
+st.sidebar.caption(
+    "Multipliers: set per builder on the **Vendors** tab "
+    f"(default for new imports: {DEFAULT_MULTIPLIER:g})."
 )
 
 st.sidebar.divider()
-if st.sidebar.button("Recompute ALL retail × sidebar mult"):
-    n = svc.reapply_multiplier(float(multiplier))
-    st.sidebar.success(f"Updated {n:,} rows")
+if st.sidebar.button("Recompute ALL retail from Vendors mults"):
+    total = 0
+    for v in svc.list_vendors():
+        m = svc.get_vendor_multiplier(v, default=DEFAULT_MULTIPLIER)
+        total += int(svc.reapply_multiplier(float(m), vendor=v) or 0)
+    st.sidebar.success(f"Updated {total:,} rows from each builder’s mult")
 
 if st.sidebar.button("💾 Backup price book DB"):
     import subprocess
@@ -797,7 +798,7 @@ with tab_batch:
                     folder,
                     recursive=recursive,
                     mode=mode,
-                    multiplier=float(multiplier),
+                    multiplier=float(DEFAULT_MULTIPLIER),
                     use_workbook_markup=use_markup,
                     vendor_override=vend_over.strip(),
                     excel_only=excel_only,
