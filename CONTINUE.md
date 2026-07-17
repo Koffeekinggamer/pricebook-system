@@ -3,8 +3,8 @@
 **Updated:** 2026-07-17  
 **Folder:** `~/FAF-pricebook`  
 **GitHub (private):** https://github.com/Koffeekinggamer/faf-pricebook-system  
-**Status:** LIVE + **standardized** · **~29,749 clean rows · 13 vendors**  
-(Junk matrix columns removed; all vendors share one field shape — see **STANDARDS.md**)
+**Status:** LIVE + standardized · **~29,638 rows · 13 vendors**  
+Smoke-test quote PDF: `smoke_test_quote.pdf` · Windy woods mapped · Millers descriptions filled
 
 ## Run (production)
 
