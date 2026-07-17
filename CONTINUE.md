@@ -31,8 +31,8 @@ CLI smoke:
 | Hope Wood | 14,931 | 2.7 | 5 woods × unfinished/finished |
 | Genuine Oak | 5,613 | **1.7** | woods slash-normalized; Master dups collapsed |
 | FN Chair | 3,067 | 2.7 | item name = SKU; wood groups canonical |
-| Windy Acres Furniture | 1,612 | 2.7 | FINISHED cols → Wood Tier N |
-| Millers Woodshop | 1,225 | 2.7 | junk `col_*` matrix cols removed |
+| Windy Acres Furniture | ~1,501 | 2.7 | Real wood groups + finished/unfinished |
+| Millers Woodshop | 1,225 | 2.7 | Descriptions = section + SKU |
 | Premier Woodcraft | 1,016 | 2.7 | 2 wood tiers, wholesale base |
 | Rainbow Bedding | 708 | 2.7 | Jan wholesale; size options clean |
 | LuxHome | 558 | 2.7 | Standard/Premium/Ultra/Genuine |
