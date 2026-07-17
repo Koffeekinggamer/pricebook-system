@@ -9,7 +9,7 @@ Streamlit + SQLite. Default retail multiplier **2.7×** (adjustable per vendor).
 
 > **Status:** LIVE — master data loaded (~41k rows, 13 vendors). See **CONTINUE.md**.  
 > **Folder:** `~/FAF-pricebook`  
-> **GitHub:** private repo `Koffeekinggamer/faf-pricebook-system`  
+> **GitHub:** private repo [Koffeekinggamer/pricebook-system](https://github.com/Koffeekinggamer/pricebook-system)  
 > Local `*.db` and `.venv` are gitignored (price book stays on this machine).
 
 ## Quick start

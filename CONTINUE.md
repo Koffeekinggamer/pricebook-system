@@ -2,7 +2,7 @@
 
 **Updated:** 2026-07-17  
 **Folder:** `~/FAF-pricebook`  
-**GitHub (private):** https://github.com/Koffeekinggamer/faf-pricebook-system  
+**GitHub (private):** https://github.com/Koffeekinggamer/pricebook-system  
 **Status:** LIVE · standardized · collections cleaned · **~29,631 rows · 13 vendors**
 
 ## Run
@@ -63,7 +63,7 @@ Or: `./scripts/backup_db.sh` · override dir with `FAF_PRICEBOOK_BACKUP_DIR=...`
 
 ```
 Continue FAF Pricebook at ~/FAF-pricebook (live, standardized).
-Repo: https://github.com/Koffeekinggamer/faf-pricebook-system
+Repo: https://github.com/Koffeekinggamer/pricebook-system
 DB: ~/FAF-pricebook/master_pricebook.db (~30k rows, 13 vendors).
 Backup: python -m backend.cli backup-db
 Next: [your ask]
