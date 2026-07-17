@@ -10,16 +10,16 @@ Run:  streamlit run pricebook_app.py
 from __future__ import annotations
 
 import json
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-import sys
-
 from backend import PriceBookService
-from backend.auth import check_login, credentials_source_hint
+from backend.auth import check_login
 from backend.config import APP_DIR, DEFAULT_MULTIPLIER, DEFAULT_SEARCH_LIMIT
 
 if str(APP_DIR) not in sys.path:
@@ -52,7 +52,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-_FAVORITES_PATH = APP_DIR / ".floor_favorites.json"
+
+def _favorites_path() -> Path:
+    """Prefer project file locally; fall back to home (Streamlit Cloud is often read-only)."""
+    local = APP_DIR / ".floor_favorites.json"
+    if local.parent.exists() and os.access(str(APP_DIR), os.W_OK):
+        return local
+    home = Path.home() / ".faf_pricebook"
+    home.mkdir(parents=True, exist_ok=True)
+    return home / "floor_favorites.json"
 
 # ---------------------------------------------------------------------------
 # Login gate
@@ -91,10 +99,6 @@ def _require_login() -> bool:
                     st.rerun()
                 else:
                     st.error("Incorrect username or password.")
-        st.caption(
-            f"Credentials source: **{credentials_source_hint()}** · "
-            "edit `.streamlit/secrets.toml` to change."
-        )
     return False
 
 
@@ -154,10 +158,11 @@ def _last_backup_hint() -> str:
 
 
 def _load_favorites() -> list[str]:
-    if not _FAVORITES_PATH.is_file():
+    path = _favorites_path()
+    if not path.is_file():
         return []
     try:
-        data = json.loads(_FAVORITES_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, list):
             return [str(x) for x in data if str(x).strip()]
     except Exception:
@@ -173,9 +178,9 @@ def _save_favorites(names: list[str]) -> None:
         if n and n not in seen:
             seen.add(n)
             clean.append(n)
-    _FAVORITES_PATH.write_text(
-        json.dumps(clean, indent=2), encoding="utf-8"
-    )
+    path = _favorites_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(clean, indent=2), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
