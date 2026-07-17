@@ -3,7 +3,7 @@
 **Updated:** 2026-07-17  
 **Folder:** `~/FAF-pricebook`  
 **GitHub (private):** https://github.com/Koffeekinggamer/pricebook-system  
-**Status:** LIVE · standardized · collections cleaned · **~29,631 rows · 13 vendors**
+**Status:** LIVE · floor search ranked · collections cleaned · **~29,631 rows · 13 vendors**
 
 ## Run
 
@@ -58,6 +58,7 @@ Or: `./scripts/backup_db.sh` · override dir with `FAF_PRICEBOOK_BACKUP_DIR=...`
 - Collections: drop option/upcharge junk; keep product categories
 - Genuine Oak mult **1.7**; others **2.7**
 - Local DB gitignored; backup to Documents only
+- Search ranks exact SKU first, finished woods next; demotes dust covers (`VECG` before `VECG-DC`)
 
 ## Next prompt
 

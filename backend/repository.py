@@ -103,13 +103,26 @@ class PriceBookRepository:
         *,
         collection: Optional[str] = None,
         vendor: Optional[str] = None,
+        finish_state: Optional[str] = None,
         limit: int = DEFAULT_SEARCH_LIMIT,
     ) -> pd.DataFrame:
+        """
+        Floor search: multi-token AND filter, ranked for sales use.
+
+        Ranking (best first):
+          1. Exact part_number match
+          2. Part number starts with query
+          3. Part contains query
+          4. Description starts with / contains
+          Prefer finished over unfinished; demote dust covers / -DC accessories
+          when the query is a short SKU (so VECG beats VECG-DC).
+        """
         clauses: list[str] = []
         params: list = []
+        q = (query or "").strip()
 
-        if query and query.strip():
-            for token in query.strip().split():
+        if q:
+            for token in q.split():
                 like = f"%{token}%"
                 clauses.append(
                     "(vendor LIKE ? OR collection LIKE ? OR part_number LIKE ? "
@@ -124,16 +137,60 @@ class PriceBookRepository:
         if vendor and vendor != "All":
             clauses.append("vendor = ?")
             params.append(vendor)
+        if finish_state and finish_state.lower() in ("finished", "unfinished", "glazed"):
+            clauses.append("finish_state = ?")
+            params.append(finish_state.lower())
 
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         cols = ", ".join(SELECT_COLS)
+
+        # Ranking params (query as a whole, case-insensitive)
+        q_lower = q.lower()
+        order_params: list = []
+        if q_lower:
+            order_sql = """
+            ORDER BY
+              CASE
+                WHEN lower(trim(coalesce(part_number,''))) = ? THEN 0
+                WHEN lower(trim(coalesce(part_number,''))) LIKE ? THEN 1
+                WHEN lower(trim(coalesce(part_number,''))) LIKE ? THEN 2
+                WHEN lower(trim(coalesce(description,''))) LIKE ? THEN 3
+                WHEN lower(trim(coalesce(description,''))) LIKE ? THEN 4
+                ELSE 5
+              END,
+              CASE lower(coalesce(finish_state,''))
+                WHEN 'finished' THEN 0
+                WHEN 'unfinished' THEN 1
+                ELSE 2
+              END,
+              CASE
+                WHEN lower(coalesce(part_number,'')) LIKE '%-dc'
+                  OR lower(coalesce(description,'')) LIKE '%dust cover%'
+                THEN 1 ELSE 0
+              END,
+              length(coalesce(part_number,'')),
+              vendor, collection, part_number, species_tier, description
+            """
+            order_params = [
+                q_lower,
+                q_lower + "%",
+                "%" + q_lower + "%",
+                q_lower + "%",
+                "%" + q_lower + "%",
+            ]
+        else:
+            order_sql = """
+            ORDER BY vendor, collection, part_number, species_tier, description
+            """
+
         sql = f"""
             SELECT {cols}
             FROM pricebook
             {where}
-            ORDER BY vendor, collection, part_number, species_tier, description
+            {order_sql}
             LIMIT ?
         """
+        params.extend(order_params)
         params.append(int(limit))
 
         with self._conn() as conn:

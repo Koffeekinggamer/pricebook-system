@@ -66,6 +66,17 @@ if st.sidebar.button("Recompute ALL retail × sidebar mult"):
     n = svc.reapply_multiplier(float(multiplier))
     st.sidebar.success(f"Updated {n:,} rows")
 
+if st.sidebar.button("💾 Backup price book DB"):
+    import subprocess
+    import sys
+
+    script = Path(__file__).resolve().parent / "scripts" / "backup_db.py"
+    rc = subprocess.call([sys.executable, str(script)])
+    if rc == 0:
+        st.sidebar.success("Backup saved under Documents/FAF-pricebook-backups")
+    else:
+        st.sidebar.error("Backup failed — see terminal")
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -156,23 +167,39 @@ tab_search, tab_import, tab_batch, tab_quotes, tab_vendors, tab_admin = st.tabs(
 # ---------------------------------------------------------------------------
 with tab_search:
     st.subheader("Master price book")
+    st.caption(
+        "Floor search ranks **exact SKU first**, then finished woods, "
+        "and demotes dust covers when you type a short part number (e.g. VECG)."
+    )
     vendors = ["All"] + svc.list_vendors()
-    collections = ["All"] + svc.list_collections()
-    c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+    c1, c2, c3, c4, c5 = st.columns([3, 1.2, 1.4, 1, 0.8])
     with c1:
-        q = st.text_input("Search", placeholder="oak queen · A591 · nightstand", key="sq")
+        q = st.text_input(
+            "Search",
+            placeholder="VECG · GO-AVNNS · oak nightstand · Abe bar stool",
+            key="sq",
+        )
     with c2:
         vf = st.selectbox("Vendor", vendors, key="sv")
     with c3:
+        # Collections scoped to selected vendor (faster on the floor)
+        coll_src = svc.list_collections(
+            vendor=None if vf == "All" else vf
+        )
+        collections = ["All"] + coll_src
         cf = st.selectbox("Collection", collections, key="sc")
     with c4:
-        lim = st.number_input("Max", 50, 5000, 500, 50, key="sl")
+        finish_opts = ["All", "finished", "unfinished"]
+        ff = st.selectbox("Finish", finish_opts, key="sf")
+    with c5:
+        lim = st.number_input("Max", 50, 5000, 200, 50, key="sl")
 
     preview_mult = st.checkbox("Preview retail with sidebar multiplier", key="sp")
     results = svc.search(
         q,
         vendor=None if vf == "All" else vf,
         collection=None if cf == "All" else cf,
+        finish_state=None if ff == "All" else ff,
         limit=int(lim),
     )
     display = results.copy()
@@ -180,57 +207,104 @@ with tab_search:
         display["multiplier"] = float(multiplier)
         display["adjusted_price"] = (display["base_price"] * float(multiplier)).round(2)
 
-    st.caption(f"{len(display):,} shown · {svc.row_count():,} total")
+    st.caption(f"{len(display):,} shown · {svc.row_count():,} total in master")
     if display.empty:
-        st.info("Empty master — import builders under **Import** or **Batch**.")
+        st.info("No hits — try fewer words, or import builders under **Import** / **Batch**.")
     else:
-        view = display.drop(columns=["id"], errors="ignore")
-        st.dataframe(view, use_container_width=True, column_config=money_cols(view))
+        # Keep id in a slim floor-facing view
+        show_cols = [
+            c
+            for c in [
+                "id",
+                "vendor",
+                "collection",
+                "part_number",
+                "description",
+                "species",
+                "finish_state",
+                "dimensions",
+                "base_price",
+                "multiplier",
+                "adjusted_price",
+            ]
+            if c in display.columns
+        ]
+        view = display[show_cols]
+        st.dataframe(view, use_container_width=True, column_config=money_cols(view), hide_index=True)
 
-        # quick add to quote
-        if "id" in results.columns and not results.empty:
-            with st.expander("Add selected search hit to a quote"):
-                qlist = svc.list_quotes(limit=50)
+        # Floor-friendly add to quote: pick a row by label, not raw id
+        with st.expander("➕ Add a hit to a quote", expanded=bool(q)):
+            qlist = svc.list_quotes(limit=50)
+            col_a, col_b = st.columns(2)
+            with col_a:
                 if qlist.empty:
-                    st.caption("Create a quote under the Quotes tab first.")
+                    if st.button("Create new quote & use it", key="search_new_q"):
+                        new_id = svc.create_quote(customer_name="Floor customer")
+                        st.session_state["active_quote"] = new_id
+                        st.session_state["search_qid"] = new_id
+                        st.success(f"Created quote id {new_id}")
+                        st.rerun()
+                    st.caption("Or open the **Quotes** tab to manage quotes.")
+                    qid = None
                 else:
                     labels = {
                         int(r["id"]): f"{r['quote_number']} — {r.get('customer_name') or 'draft'}"
                         for _, r in qlist.iterrows()
                     }
+                    default_q = st.session_state.get("active_quote")
+                    keys = list(labels.keys())
+                    idx = keys.index(default_q) if default_q in keys else 0
                     qid = st.selectbox(
                         "Quote",
-                        list(labels.keys()),
+                        keys,
+                        index=idx,
                         format_func=lambda i: labels[i],
                         key="search_qid",
                     )
-                    row_id = st.number_input(
-                        "Pricebook row id (from search results)",
-                        min_value=1,
-                        value=int(results.iloc[0]["id"]),
-                        key="search_rid",
+            with col_b:
+                # Build pick list from search hits
+                pick_labels = []
+                pick_ids = []
+                for _, r in results.head(80).iterrows():
+                    rid = int(r["id"])
+                    label = (
+                        f"#{rid} · {r.get('part_number') or '—'} · "
+                        f"{(r.get('description') or '')[:40]} · "
+                        f"{(r.get('species') or '')[:28]} · "
+                        f"{r.get('finish_state') or ''} · "
+                        f"${float(r.get('adjusted_price') or 0):,.2f}"
                     )
-                    qty = st.number_input("Qty", 0.1, 999.0, 1.0, 1.0, key="search_qty")
-                    if st.button("Add line to quote", key="search_add"):
-                        try:
-                            svc.add_quote_line_from_id(int(qid), int(row_id), qty=float(qty))
-                            st.success("Added.")
-                        except Exception as e:
-                            st.error(str(e))
+                    pick_labels.append(label)
+                    pick_ids.append(rid)
+                chosen = st.selectbox(
+                    "Price book row",
+                    range(len(pick_ids)),
+                    format_func=lambda i: pick_labels[i],
+                    key="search_pick",
+                )
+                row_id = pick_ids[chosen] if pick_ids else None
+                qty = st.number_input("Qty", 0.1, 999.0, 1.0, 1.0, key="search_qty")
+            if qid and row_id and st.button("Add line to quote", type="primary", key="search_add"):
+                try:
+                    svc.add_quote_line_from_id(int(qid), int(row_id), qty=float(qty))
+                    st.session_state["active_quote"] = int(qid)
+                    st.success("Added to quote — see **Quotes** tab.")
+                except Exception as e:
+                    st.error(str(e))
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M")
         e1, e2, e3 = st.columns(3)
         with e1:
             st.download_button(
                 "⬇️ Excel",
-                svc.export_excel(view),
+                svc.export_excel(view.drop(columns=["id"], errors="ignore")),
                 f"pricebook_{stamp}.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         with e2:
             st.download_button(
                 "⬇️ CSV",
-                svc.export_csv(view),
+                svc.export_csv(view.drop(columns=["id"], errors="ignore")),
                 f"pricebook_{stamp}.csv",
                 "text/csv",
             )

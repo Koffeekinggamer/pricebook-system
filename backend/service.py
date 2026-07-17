@@ -63,11 +63,16 @@ class PriceBookService:
         *,
         collection: Optional[str] = None,
         vendor: Optional[str] = None,
+        finish_state: Optional[str] = None,
         limit: int = DEFAULT_SEARCH_LIMIT,
     ) -> pd.DataFrame:
         self.ensure_ready()
         return self.repo.search(
-            query, collection=collection, vendor=vendor, limit=limit
+            query,
+            collection=collection,
+            vendor=vendor,
+            finish_state=finish_state,
+            limit=limit,
         )
 
     def get_row(self, row_id: int) -> Optional[dict]:
