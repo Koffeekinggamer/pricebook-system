@@ -100,14 +100,34 @@ class PriceBookService:
 
     # ------------------------------------------------------------------ write
     def add_rows(self, rows: list[dict], *, mode: str = "append") -> dict:
+        """
+        Commit rows to master.
+
+        Modes:
+          - replace_vendor / replace_builder / replace_source:
+              delete ALL rows for this builder, then insert (one catalog per builder)
+          - upsert: update matching identities, insert new
+          - append: always insert
+        """
         self.ensure_ready()
         if not rows:
             return {"inserted": 0, "updated": 0, "deleted": 0, "total": 0}
 
+        from backend.standardize import resolve_builder_vendor
+
+        # Canonical vendor on every row (prevents filename twins)
+        vend_raw = rows[0].get("vendor") or ""
+        source = rows[0].get("source_file") or ""
+        vend = resolve_builder_vendor(vend_raw, filename=str(source)) or vend_raw
+        for r in rows:
+            r["vendor"] = vend
+
         deleted = 0
-        if mode == "replace_source":
-            source = rows[0].get("source_file")
-            if source:
+        if mode in ("replace_source", "replace_vendor", "replace_builder"):
+            # One builder = one book: wipe this vendor entirely, then load
+            if vend:
+                deleted = self.repo.delete_by_vendor(vend)
+            elif source:
                 deleted = self.repo.delete_by_source(source)
             n = self.repo.insert_rows(rows)
             return {

@@ -106,14 +106,19 @@ def render_commit(rows: list[dict], source_name: str, vendor_hint: str = "") -> 
 
     mode = st.radio(
         "Commit mode",
-        ["upsert", "append", "replace_source"],
+        ["replace_vendor", "upsert", "append"],
         format_func=lambda m: {
-            "upsert": "Upsert (smart update)",
-            "append": "Append always",
-            "replace_source": "Replace this filename",
+            "replace_vendor": "Replace this builder (recommended — one catalog per builder)",
+            "upsert": "Upsert (smart update, no full replace)",
+            "append": "Append always (can create duplicates)",
         }[m],
         horizontal=True,
         key=f"mode_{source_name}",
+        index=0,
+    )
+    st.caption(
+        "Policy: **one builder = one vendor**. Re-importing Premier replaces all Premier rows "
+        "— it will not create a second Premier."
     )
     if st.button("➕ Commit to master", type="primary", key=f"go_{source_name}"):
         result = svc.add_rows(rows, mode=mode)
@@ -401,7 +406,21 @@ with tab_batch:
         excel_only = st.checkbox("Excel only (skip PDF)", value=True)
     with b3:
         use_markup = st.checkbox("Use workbook markup sheets", value=True)
-    mode = st.selectbox("Mode", ["upsert", "append", "replace_source"], key="bm")
+    mode = st.selectbox(
+        "Mode",
+        ["replace_vendor", "upsert", "append"],
+        format_func=lambda m: {
+            "replace_vendor": "Replace each builder (recommended — no duplicates)",
+            "upsert": "Upsert only",
+            "append": "Append (not recommended)",
+        }[m],
+        key="bm",
+        index=0,
+    )
+    st.caption(
+        "Batch maps filenames to **one name per builder** (e.g. MWS 2023 + Millers 2026 → "
+        "Millers Woodshop only). Only one file per builder is imported."
+    )
     vend_over = st.text_input("Force one vendor name for all (optional)", key="bvo")
 
     if st.button("Scan folder"):

@@ -367,7 +367,7 @@ def standardize_part(val: Any) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# vendor names
+# vendor names — ONE builder = ONE vendor (no year / filename twins)
 # ---------------------------------------------------------------------------
 
 VENDOR_CANON = {
@@ -376,36 +376,106 @@ VENDOR_CANON = {
     "genuine oak": "Genuine Oak",
     "millers woodshop": "Millers Woodshop",
     "miller's woodshop": "Millers Woodshop",
+    "millers": "Millers Woodshop",
+    "mws": "Millers Woodshop",
     "mws 2023": "Millers Woodshop",
     "windy acres furniture": "Windy Acres Furniture",
+    "windy acres": "Windy Acres Furniture",
     "fn chair": "FN Chair",
+    "fn chairs": "FN Chair",
     "rainbow bedding": "Rainbow Bedding",
+    "rainbow": "Rainbow Bedding",
     "premier woodcraft": "Premier Woodcraft",
+    "premier": "Premier Woodcraft",
     "charleston forge": "Charleston Forge",
     "luxhome": "LuxHome",
     "lux home": "LuxHome",
+    "aj's luxhome": "LuxHome",
+    "ajs luxhome": "LuxHome",
+    "aj luxhome": "LuxHome",
     "patio kraft": "Patio Kraft",
+    "patiokraft": "Patio Kraft",
     "beaverdam": "Beaverdam",
     "gvwi": "GVWI",
+    "gable valley": "GVWI",
     "lamb": "LAMB",
 }
 
+# Substring matchers for messy filenames (order: more specific first)
+_VENDOR_FILENAME_HINTS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"(?i)genuine\s*oak"), "Genuine Oak"),
+    (re.compile(r"(?i)millers?\s*woodshop|mws\b"), "Millers Woodshop"),
+    (re.compile(r"(?i)windy\s*acres"), "Windy Acres Furniture"),
+    (re.compile(r"(?i)\bfn\s*chairs?\b"), "FN Chair"),
+    (re.compile(r"(?i)rainbow\s*bedding|jan\s*2026\s*wholesale"), "Rainbow Bedding"),
+    (re.compile(r"(?i)premier\s*woodcraft|\bpremier\b"), "Premier Woodcraft"),
+    (re.compile(r"(?i)charleston\s*forge"), "Charleston Forge"),
+    (re.compile(r"(?i)lux\s*home|luxhome|aj'?s?\s*lux"), "LuxHome"),
+    (re.compile(r"(?i)patio\s*kraft|patiokraft"), "Patio Kraft"),
+    (re.compile(r"(?i)beaverdam"), "Beaverdam"),
+    (re.compile(r"(?i)\bgvwi\b|gable\s*valley"), "GVWI"),
+    (re.compile(r"(?i)\blamb\b"), "LAMB"),
+    (re.compile(r"(?i)hope\s*wood|hopewood|\bhw_2025\b|\bhw_"), "Hope Wood"),
+]
 
-def standardize_vendor(val: Any) -> Optional[str]:
-    s = standardize_text(val)
+
+def resolve_builder_vendor(
+    name: Any = "",
+    *,
+    filename: str = "",
+) -> Optional[str]:
+    """
+    Map any vendor label or price-list filename to exactly one builder name.
+
+    Policy: one builder → one vendor. Years, markup suffixes, and alternate
+    filenames (MWS 2023 vs Millers 2026) collapse to the same name.
+    """
+    # Filename hints win when provided (clearest builder identity)
+    fn = (filename or "").strip()
+    if fn:
+        stem = Path_stem_safe(fn)
+        for rx, canon in _VENDOR_FILENAME_HINTS:
+            if rx.search(stem) or rx.search(fn):
+                return canon
+
+    s = standardize_text(name)
     if not s:
         return None
-    key = s.lower()
-    if key in VENDOR_CANON:
-        return VENDOR_CANON[key]
-    # drop filename noise
-    s2 = re.sub(r"[_]+", " ", s)
-    s2 = re.sub(r"\s+\d{1,2}-\d{1,2}-\d{2,4}.*$", "", s2)
-    s2 = _collapse_ws(s2)
-    key2 = s2.lower()
-    if key2 in VENDOR_CANON:
-        return VENDOR_CANON[key2]
-    return s2
+
+    # Try filename-style noise strip on the name itself
+    s_clean = re.sub(r"[_]+", " ", s)
+    s_clean = re.sub(
+        r"(?i)\s*(wholesale|retail)?\s*(price\s*list|pricelist|pricebook).*$",
+        "",
+        s_clean,
+    )
+    s_clean = re.sub(r"\s+\d{1,2}[-_/]\d{1,2}[-_/]\d{2,4}.*$", "", s_clean)
+    s_clean = re.sub(r"(?i)\s*[-_]?\s*(revised|rep|digital|master).*$", "", s_clean)
+    s_clean = re.sub(r"(?i)\s*20\d{2}\s*$", "", s_clean)
+    s_clean = _collapse_ws(s_clean)
+
+    for candidate in (s, s_clean, s_clean.lower()):
+        key = candidate.lower().strip()
+        if key in VENDOR_CANON:
+            return VENDOR_CANON[key]
+
+    for rx, canon in _VENDOR_FILENAME_HINTS:
+        if rx.search(s) or rx.search(s_clean):
+            return canon
+
+    return s_clean or s
+
+
+def Path_stem_safe(filename: str) -> str:
+    """stem without importing pathlib at module top circular risk — local use."""
+    from pathlib import Path
+
+    p = Path(filename)
+    return p.stem if p.suffix else filename
+
+
+def standardize_vendor(val: Any) -> Optional[str]:
+    return resolve_builder_vendor(val)
 
 
 # ---------------------------------------------------------------------------

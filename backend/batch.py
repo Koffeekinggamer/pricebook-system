@@ -46,28 +46,16 @@ class BatchResult:
 
 
 def _vendor_from_name(path: Path, override: str = "") -> str:
+    """One builder = one vendor name (never year/filename twins)."""
+    from backend.standardize import resolve_builder_vendor
+
     if override:
-        return override
-    stem = path.stem
-    # strip common noise
-    for bit in (
-        " wholesale price list",
-        " Wholesale Price List",
-        " Retail Pricelist",
-        " retail pricelist",
-        " Price List",
-        " Pricelist",
-        " price list",
-        " pricelist",
-        " Pricebook",
-        " pricebook",
-    ):
-        if bit.lower() in stem.lower():
-            # case-insensitive replace once
-            idx = stem.lower().find(bit.lower())
-            if idx >= 0:
-                stem = (stem[:idx] + stem[idx + len(bit) :]).strip(" _-")
-    return stem[:80] or path.name
+        return resolve_builder_vendor(override) or override.strip()
+    return (
+        resolve_builder_vendor(path.stem, filename=path.name)
+        or path.stem[:80]
+        or path.name
+    )
 
 
 class BatchImporter:
@@ -112,10 +100,42 @@ class BatchImporter:
         if excel_only:
             files = [f for f in files if f.suffix.lower() in EXCEL_EXT]
 
+        # Prefer one file per builder when several map to the same vendor
+        # (e.g. MWS 2023 + Millers 2026) — keep the **last** sorted path.
+        chosen: dict[str, Path] = {}
+        order: list[str] = []
+        skipped_dup_files: list[tuple[str, str, str]] = []
         for path in files:
             vendor = _vendor_from_name(path, vendor_override)
+            if vendor in chosen:
+                # Drop the previous file for this builder; keep this one
+                prev = chosen[vendor]
+                skipped_dup_files.append((prev.name, path.name, vendor))
+            else:
+                order.append(vendor)
+            chosen[vendor] = path
+
+        for dropped_name, kept_name, vendor in skipped_dup_files:
+            result.files.append(
+                BatchFileResult(
+                    path=dropped_name,
+                    vendor=vendor,
+                    status="skipped",
+                    message=(
+                        f"Duplicate builder — using {kept_name} only "
+                        f"(one catalog per builder)"
+                    ),
+                )
+            )
             if progress:
-                progress(f"Importing {path.name}…")
+                progress(
+                    f"Skip {dropped_name} (same builder as {kept_name} → {vendor})"
+                )
+
+        for vendor in order:
+            path = chosen[vendor]
+            if progress:
+                progress(f"Importing {path.name} → {vendor}…")
             try:
                 data = path.read_bytes()
                 if path.suffix.lower() in EXCEL_EXT:
@@ -153,16 +173,22 @@ class BatchImporter:
                     )
                     continue
 
-                # apply mult to rows if needed
                 for r in rows:
+                    r["vendor"] = vendor
                     r["multiplier"] = mult_used
                     if r.get("base_price") is not None:
                         r["adjusted_price"] = round(
                             float(r["base_price"]) * float(mult_used), 2
                         )
 
-                if mode == "replace_source":
-                    deleted = self.repo.delete_by_source(path.name)
+                # One builder = one catalog. replace_* clears the vendor first.
+                use_mode = mode
+                if use_mode in (
+                    "replace_vendor",
+                    "replace_builder",
+                    "replace_source",
+                ):
+                    deleted = self.repo.delete_by_vendor(vendor)
                     n = self.repo.insert_rows(rows)
                     counts = {
                         "inserted": n,
@@ -170,13 +196,13 @@ class BatchImporter:
                         "total": n,
                         "deleted": deleted,
                     }
-                elif mode == "upsert":
+                elif use_mode == "upsert":
                     counts = self.repo.upsert_rows(rows)
+                    counts["deleted"] = 0
                 else:
                     n = self.repo.insert_rows(rows)
-                    counts = {"inserted": n, "updated": 0, "total": n}
+                    counts = {"inserted": n, "updated": 0, "total": n, "deleted": 0}
 
-                # remember vendor mult
                 self.repo.set_vendor_multiplier(vendor, float(mult_used))
 
                 result.files.append(
@@ -187,7 +213,7 @@ class BatchImporter:
                         inserted=counts.get("inserted", 0),
                         updated=counts.get("updated", 0),
                         total=counts.get("total", 0),
-                        message=f"mult={mult_used:g}",
+                        message=f"mult={mult_used:g} mode={use_mode}",
                         markup=markup,
                     )
                 )

@@ -44,8 +44,10 @@ CLI smoke:
 
 ## Decisions locked in
 
+- **One builder = one vendor** — never duplicate (MWS + Millers → Millers Woodshop only).
+- Default import mode: **replace_vendor** (wipe that builder, load new book).
 - **Rainbow Bedding** = Jan 2026 wholesale file (not the pre-marked Rainbow export).
-- **AJ’s LuxHome addon** = 100% same as wholesale book → not double-loaded.
+- **AJ’s LuxHome addon** = same builder as LuxHome → not a second vendor.
 - **Genuine Oak** stays **1.7×** per builder Markup sheet.
 - **Local DB** gitignored (never on GitHub).
 

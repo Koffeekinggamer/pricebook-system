@@ -44,7 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     ip.add_argument("--vendor", default="")
     ip.add_argument("--multiplier", type=float, default=2.7)
     ip.add_argument(
-        "--mode", choices=["append", "upsert", "replace_source"], default="upsert"
+        "--mode",
+        choices=["append", "upsert", "replace_source", "replace_vendor"],
+        default="replace_vendor",
+        help="replace_vendor = one catalog per builder (default)",
     )
     ip.add_argument("--use-markup", action="store_true")
 
@@ -57,7 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     bp.add_argument("--multiplier", type=float, default=2.7)
     bp.add_argument("--use-markup", action="store_true", default=True)
     bp.add_argument(
-        "--mode", choices=["append", "upsert", "replace_source"], default="upsert"
+        "--mode",
+        choices=["append", "upsert", "replace_source", "replace_vendor"],
+        default="replace_vendor",
+        help="replace_vendor = wipe+reload each builder (default; no twins)",
     )
     bp.add_argument("--vendor", default="", help="Force one vendor name")
 
@@ -118,9 +124,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "import-xlsx":
+        from backend.standardize import resolve_builder_vendor
+
         path = Path(args.path)
         data = path.read_bytes()
-        vendor = args.vendor or path.stem
+        vendor = resolve_builder_vendor(
+            args.vendor or path.stem, filename=path.name
+        ) or (args.vendor or path.stem)
         preview = svc.preview_excel(
             data,
             filename=path.name,
@@ -129,7 +139,10 @@ def main(argv: list[str] | None = None) -> int:
             use_workbook_markup=args.use_markup,
         )
         print(preview.notes)
-        print(f"Preview rows: {len(preview.rows)} · mult={preview.multiplier_used}")
+        print(
+            f"Builder: {vendor} (one catalog) · "
+            f"Preview rows: {len(preview.rows)} · mult={preview.multiplier_used} · mode={args.mode}"
+        )
         result = svc.add_rows(preview.rows, mode=args.mode)
         svc.set_vendor_multiplier(vendor, preview.multiplier_used)
         print(result)
