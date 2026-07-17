@@ -17,10 +17,65 @@ import pandas as pd
 import streamlit as st
 
 from backend import PriceBookService
+from backend.auth import check_login, credentials_source_hint
 from backend.config import DEFAULT_MULTIPLIER
 
+st.set_page_config(
+    page_title="FAF Price Book",
+    page_icon="🔥",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
 # ---------------------------------------------------------------------------
-# Service
+# Login gate
+# ---------------------------------------------------------------------------
+
+
+def _require_login() -> bool:
+    """Show login form until authenticated. Returns True when logged in."""
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.markdown(
+        """
+        <div style="max-width:420px;margin:4rem auto 1rem auto;text-align:center;">
+          <div style="font-size:2rem;font-weight:700;color:#2d4a30;">🔥 FAF Price Book</div>
+          <div style="color:#555;margin-top:0.25rem;">Foothills Amish Furniture · sign in to continue</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col_l, col_c, col_r = st.columns([1, 1.2, 1])
+    with col_c:
+        with st.form("login_form", clear_on_submit=False):
+            user = st.text_input("Username", autocomplete="username")
+            pw = st.text_input(
+                "Password", type="password", autocomplete="current-password"
+            )
+            submitted = st.form_submit_button(
+                "Sign in", type="primary", use_container_width=True
+            )
+            if submitted:
+                if check_login(user, pw):
+                    st.session_state["authenticated"] = True
+                    st.session_state["auth_user"] = user.strip()
+                    st.rerun()
+                else:
+                    st.error("Incorrect username or password.")
+        st.caption(
+            f"Credentials source: **{credentials_source_hint()}** · "
+            "edit `.streamlit/secrets.toml` to change."
+        )
+    return False
+
+
+if not _require_login():
+    st.stop()
+
+# ---------------------------------------------------------------------------
+# Service (after login)
 # ---------------------------------------------------------------------------
 
 
@@ -32,13 +87,6 @@ def get_service() -> PriceBookService:
 
 
 svc = get_service()
-
-st.set_page_config(
-    page_title="FAF Price Book",
-    page_icon="🔥",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -143,6 +191,13 @@ def render_commit(rows: list[dict], source_name: str, vendor_hint: str = "") -> 
 
 st.sidebar.title("🔥 FAF Price Book")
 st.sidebar.caption("Foothills Amish Furniture")
+who = st.session_state.get("auth_user") or "user"
+st.sidebar.caption(f"Signed in as **{who}**")
+if st.sidebar.button("Sign out"):
+    for k in ("authenticated", "auth_user"):
+        st.session_state.pop(k, None)
+    st.rerun()
+
 stats = svc.stats()
 st.sidebar.metric("Master rows", f"{stats['rows']:,}")
 st.sidebar.caption(
