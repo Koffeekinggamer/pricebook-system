@@ -1,15 +1,36 @@
-# Deploy FAF Price Book
+# Deploy FAF Price Book (online access)
 
-## Option A — Streamlit Community Cloud (permanent URL)
+## Live public access (working now)
 
-1. Open https://share.streamlit.io/deploy (sign in with GitHub).
-2. **Repository:** `Koffeekinggamer/pricebook-system`  
-   Public: https://github.com/Koffeekinggamer/pricebook-system
-3. **Branch:** `main`
-4. **Main file path:** `pricebook_app.py`
-5. **App URL** (optional): e.g. `faf-pricebook` → `https://faf-pricebook.streamlit.app`
-6. Click **Deploy**.
-7. **Settings → Secrets** — paste:
+While this Mac is on (autostart enabled):
+
+| | |
+|--|--|
+| **Public URL** | See `~/Documents/FAF-pricebook-backups/CURRENT_PUBLIC_URL.txt` |
+| **Local** | http://localhost:8501 |
+| **Login** | Foothills / Amish |
+
+Restart tunnel anytime:
+
+```bash
+~/FAF-pricebook/scripts/public_tunnel.sh
+# or
+ssh -R 80:127.0.0.1:8501 nokey@localhost.run
+```
+
+## Streamlit Community Cloud (permanent `*.streamlit.app`)
+
+Repo is **public**: https://github.com/Koffeekinggamer/pricebook-system
+
+1. Open https://share.streamlit.io/deploy
+2. Sign in with GitHub as **Koffeekinggamer**
+3. Fill in:
+   - Repository: `Koffeekinggamer/pricebook-system`
+   - Branch: `main`
+   - Main file path: `pricebook_app.py`
+   - App URL (optional): `faf-pricebook`
+4. Deploy
+5. Settings → Secrets (optional — defaults work):
 
 ```toml
 [auth]
@@ -17,28 +38,14 @@ username = "Foothills"
 password = "Amish"
 ```
 
-8. Save secrets and reboot the app if needed.
-9. Confirm login works and Search shows ~30k+ rows.
-
-**Note:** The GitHub repo is **public** so Streamlit Cloud can deploy without private-repo OAuth.  
-The app itself still requires login (Foothills / Amish). Secrets stay in Streamlit Cloud / local `secrets.toml` only (not committed).
-
-## Option B — Public tunnel from this Mac (already scripted)
-
-Requires this computer online with Streamlit running:
+## Fly.io (Docker, permanent)
 
 ```bash
-~/FAF-pricebook/scripts/public_tunnel.sh
-```
-
-Gives a temporary `https://….trycloudflare.com` URL. Login: Foothills / Amish.
-
-## Local (always)
-
-```bash
+export PATH="$HOME/.fly/bin:$PATH"
+fly auth login
 cd ~/FAF-pricebook
-source .venv/bin/activate
-streamlit run pricebook_app.py --server.port 8501
+fly launch --copy-config --name faf-pricebook --region iad --yes
+fly deploy
 ```
 
-Open http://localhost:8501
+Dockerfile + fly.toml are in the repo.
