@@ -3,7 +3,7 @@
 **Updated:** 2026-07-17  
 **Folder:** `~/FAF-pricebook`  
 **GitHub (private):** https://github.com/Koffeekinggamer/pricebook-system  
-**Status:** LIVE · floor search ranked · collections cleaned · **~29,631 rows · 13 vendors**
+**Status:** LIVE · floor UI polish · search + quotes + vendors · **~29,631 rows · 13 vendors**
 
 ## Run
 

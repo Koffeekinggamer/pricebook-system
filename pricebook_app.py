@@ -41,43 +41,6 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Sidebar
-# ---------------------------------------------------------------------------
-
-st.sidebar.title("🔥 FAF Price Book")
-st.sidebar.caption("Foothills Amish Furniture")
-stats = svc.stats()
-st.sidebar.metric("Master rows", f"{stats['rows']:,}")
-st.sidebar.caption(
-    f"{stats['vendors']} vendors · {stats['collections']} collections · "
-    f"{stats.get('quotes', 0)} quotes"
-)
-
-multiplier = st.sidebar.number_input(
-    "Default multiplier",
-    min_value=0.1,
-    max_value=20.0,
-    value=float(DEFAULT_MULTIPLIER),
-    step=0.1,
-)
-
-st.sidebar.divider()
-if st.sidebar.button("Recompute ALL retail × sidebar mult"):
-    n = svc.reapply_multiplier(float(multiplier))
-    st.sidebar.success(f"Updated {n:,} rows")
-
-if st.sidebar.button("💾 Backup price book DB"):
-    import subprocess
-    import sys
-
-    script = Path(__file__).resolve().parent / "scripts" / "backup_db.py"
-    rc = subprocess.call([sys.executable, str(script)])
-    if rc == 0:
-        st.sidebar.success("Backup saved under Documents/FAF-pricebook-backups")
-    else:
-        st.sidebar.error("Backup failed — see terminal")
-
-# ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
@@ -90,6 +53,34 @@ def _bytes(upload) -> bytes:
         except Exception:
             pass
     return data
+
+
+def _last_backup_hint() -> str:
+    backup_dir = Path.home() / "Documents" / "FAF-pricebook-backups"
+    if not backup_dir.is_dir():
+        return "No backup yet"
+    files = sorted(backup_dir.glob("master_pricebook-*.db"), key=lambda p: p.stat().st_mtime)
+    if not files:
+        return "No backup yet"
+    latest = files[-1]
+    age = datetime.fromtimestamp(latest.stat().st_mtime).strftime("%b %d %I:%M %p")
+    return f"{latest.name} · {age}"
+
+
+def money_cols(df: pd.DataFrame):
+    return {
+        "base_price": st.column_config.NumberColumn("Wholesale", format="$%.2f"),
+        "adjusted_price": st.column_config.NumberColumn(
+            "RETAIL", format="$%.2f", help="What the customer pays (base × mult)"
+        ),
+        "unit_retail": st.column_config.NumberColumn("Each $", format="$%.2f"),
+        "line_total": st.column_config.NumberColumn("Line $", format="$%.2f"),
+        "multiplier": st.column_config.NumberColumn("Mult", format="%.2f"),
+        "qty": st.column_config.NumberColumn("Qty", min_value=0.1, step=1.0),
+        "line_discount_pct": st.column_config.NumberColumn(
+            "Disc %", min_value=0.0, max_value=100.0, step=1.0, format="%.1f"
+        ),
+    }
 
 
 def render_commit(rows: list[dict], source_name: str, vendor_hint: str = "") -> None:
@@ -128,14 +119,15 @@ def render_commit(rows: list[dict], source_name: str, vendor_hint: str = "") -> 
         index=0,
     )
     st.caption(
-        "Policy: **one builder = one vendor**. Re-importing Premier replaces all Premier rows "
-        "— it will not create a second Premier."
+        "Policy: **one builder = one vendor**. Re-importing Premier replaces all Premier rows."
     )
     if st.button("➕ Commit to master", type="primary", key=f"go_{source_name}"):
         result = svc.add_rows(rows, mode=mode)
         vend = vendor_hint or (rows[0].get("vendor") if rows else "")
         if vend and rows:
-            svc.set_vendor_multiplier(vend, float(rows[0].get("multiplier") or multiplier))
+            svc.set_vendor_multiplier(
+                vend, float(rows[0].get("multiplier") or multiplier)
+            )
         st.success(
             f"Done · total {result.get('total', 0):,} · "
             f"in {result.get('inserted', 0):,} · up {result.get('updated', 0):,} · "
@@ -144,15 +136,63 @@ def render_commit(rows: list[dict], source_name: str, vendor_hint: str = "") -> 
         st.balloons()
 
 
-def money_cols(df: pd.DataFrame):
-    return {
-        "base_price": st.column_config.NumberColumn("Base", format="$%.2f"),
-        "adjusted_price": st.column_config.NumberColumn("Retail", format="$%.2f"),
-        "unit_retail": st.column_config.NumberColumn("Each", format="$%.2f"),
-        "line_total": st.column_config.NumberColumn("Line", format="$%.2f"),
-        "multiplier": st.column_config.NumberColumn("Mult", format="%.2f"),
-    }
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
 
+st.sidebar.title("🔥 FAF Price Book")
+st.sidebar.caption("Foothills Amish Furniture")
+stats = svc.stats()
+st.sidebar.metric("Master rows", f"{stats['rows']:,}")
+st.sidebar.caption(
+    f"{stats['vendors']} vendors · {stats['collections']} collections · "
+    f"{stats.get('quotes', 0)} quotes"
+)
+
+multiplier = st.sidebar.number_input(
+    "Default multiplier",
+    min_value=0.1,
+    max_value=20.0,
+    value=float(DEFAULT_MULTIPLIER),
+    step=0.1,
+)
+
+st.sidebar.divider()
+if st.sidebar.button("Recompute ALL retail × sidebar mult"):
+    n = svc.reapply_multiplier(float(multiplier))
+    st.sidebar.success(f"Updated {n:,} rows")
+
+if st.sidebar.button("💾 Backup price book DB"):
+    import subprocess
+    import sys
+
+    script = Path(__file__).resolve().parent / "scripts" / "backup_db.py"
+    rc = subprocess.call([sys.executable, str(script)])
+    if rc == 0:
+        st.sidebar.success("Saved → Documents/FAF-pricebook-backups")
+    else:
+        st.sidebar.error("Backup failed — see terminal")
+st.sidebar.caption(f"Last backup: {_last_backup_hint()}")
+
+# ---------------------------------------------------------------------------
+# Home dashboard strip
+# ---------------------------------------------------------------------------
+
+vsum = svc.vendor_summary()
+top_vendors = ""
+if not vsum.empty:
+    top = vsum.head(3)
+    top_vendors = " · ".join(
+        f"{r['vendor']} ({int(r['rows']):,})" for _, r in top.iterrows()
+    )
+
+d1, d2, d3, d4 = st.columns(4)
+d1.metric("Price rows", f"{stats['rows']:,}")
+d2.metric("Builders", f"{stats['vendors']}")
+d3.metric("Open quotes", f"{stats.get('quotes', 0)}")
+d4.metric("Last backup", _last_backup_hint().split("·")[-1].strip() if "·" in _last_backup_hint() else _last_backup_hint())
+if top_vendors:
+    st.caption(f"Largest books: {top_vendors}")
 
 # ===========================================================================
 # TABS
@@ -166,35 +206,34 @@ tab_search, tab_import, tab_batch, tab_quotes, tab_vendors, tab_admin = st.tabs(
 # SEARCH
 # ---------------------------------------------------------------------------
 with tab_search:
-    st.subheader("Master price book")
+    st.subheader("Find a price")
     st.caption(
-        "Floor search ranks **exact SKU first**, then finished woods, "
-        "and demotes dust covers when you type a short part number (e.g. VECG)."
+        "Type a **part number** or words · exact SKU ranks first · "
+        "dust covers sink when you type a short code (VECG before VECG-DC)."
     )
+
+    q = st.text_input(
+        "Search the master book",
+        placeholder="VECG   ·   GO-AVNNS   ·   oak nightstand   ·   Abe bar stool",
+        key="sq",
+        label_visibility="collapsed",
+    )
+
     vendors = ["All"] + svc.list_vendors()
-    c1, c2, c3, c4, c5 = st.columns([3, 1.2, 1.4, 1, 0.8])
-    with c1:
-        q = st.text_input(
-            "Search",
-            placeholder="VECG · GO-AVNNS · oak nightstand · Abe bar stool",
-            key="sq",
-        )
-    with c2:
-        vf = st.selectbox("Vendor", vendors, key="sv")
-    with c3:
-        # Collections scoped to selected vendor (faster on the floor)
-        coll_src = svc.list_collections(
-            vendor=None if vf == "All" else vf
-        )
+    f1, f2, f3, f4 = st.columns([1.3, 1.5, 1.2, 0.8])
+    with f1:
+        vf = st.selectbox("Builder", vendors, key="sv")
+    with f2:
+        coll_src = svc.list_collections(vendor=None if vf == "All" else vf)
         collections = ["All"] + coll_src
         cf = st.selectbox("Collection", collections, key="sc")
-    with c4:
-        finish_opts = ["All", "finished", "unfinished"]
-        ff = st.selectbox("Finish", finish_opts, key="sf")
-    with c5:
-        lim = st.number_input("Max", 50, 5000, 200, 50, key="sl")
+    with f3:
+        # Floor default: finished only
+        finish_opts = ["finished", "All", "unfinished"]
+        ff = st.selectbox("Finish", finish_opts, index=0, key="sf")
+    with f4:
+        lim = st.number_input("Max rows", 50, 5000, 150, 50, key="sl")
 
-    preview_mult = st.checkbox("Preview retail with sidebar multiplier", key="sp")
     results = svc.search(
         q,
         vendor=None if vf == "All" else vf,
@@ -203,113 +242,141 @@ with tab_search:
         limit=int(lim),
     )
     display = results.copy()
-    if preview_mult and not display.empty and "base_price" in display.columns:
-        display["multiplier"] = float(multiplier)
-        display["adjusted_price"] = (display["base_price"] * float(multiplier)).round(2)
 
-    st.caption(f"{len(display):,} shown · {svc.row_count():,} total in master")
+    # Floor table emphasizes RETAIL
     if display.empty:
-        st.info("No hits — try fewer words, or import builders under **Import** / **Batch**.")
+        st.info("No hits — try fewer words, or check **Builder** / **Finish** filters.")
     else:
-        # Keep id in a slim floor-facing view
+        st.markdown(
+            f"**{len(display):,}** hits · "
+            f"<span style='color:#2d4a30;font-weight:700'>Retail is what the customer pays</span>",
+            unsafe_allow_html=True,
+        )
         show_cols = [
             c
             for c in [
-                "id",
-                "vendor",
-                "collection",
                 "part_number",
                 "description",
+                "vendor",
+                "collection",
                 "species",
                 "finish_state",
                 "dimensions",
                 "base_price",
                 "multiplier",
                 "adjusted_price",
+                "id",
             ]
             if c in display.columns
         ]
-        view = display[show_cols]
-        st.dataframe(view, use_container_width=True, column_config=money_cols(view), hide_index=True)
+        view = display[show_cols].rename(
+            columns={
+                "part_number": "Part #",
+                "description": "Description",
+                "vendor": "Builder",
+                "collection": "Collection",
+                "species": "Wood / option",
+                "finish_state": "Finish",
+                "dimensions": "Dims",
+                "base_price": "Wholesale",
+                "multiplier": "Mult",
+                "adjusted_price": "RETAIL",
+                "id": "Row id",
+            }
+        )
+        st.dataframe(
+            view,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Wholesale": st.column_config.NumberColumn(format="$%.2f"),
+                "RETAIL": st.column_config.NumberColumn(
+                    "RETAIL", format="$%.2f", help="Customer price"
+                ),
+                "Mult": st.column_config.NumberColumn(format="%.2f"),
+            },
+            height=420,
+        )
 
-        # Floor-friendly add to quote: pick a row by label, not raw id
-        with st.expander("➕ Add a hit to a quote", expanded=bool(q)):
-            qlist = svc.list_quotes(limit=50)
-            col_a, col_b = st.columns(2)
-            with col_a:
-                if qlist.empty:
-                    if st.button("Create new quote & use it", key="search_new_q"):
-                        new_id = svc.create_quote(customer_name="Floor customer")
-                        st.session_state["active_quote"] = new_id
-                        st.session_state["search_qid"] = new_id
-                        st.success(f"Created quote id {new_id}")
-                        st.rerun()
-                    st.caption("Or open the **Quotes** tab to manage quotes.")
-                    qid = None
-                else:
-                    labels = {
-                        int(r["id"]): f"{r['quote_number']} — {r.get('customer_name') or 'draft'}"
-                        for _, r in qlist.iterrows()
-                    }
-                    default_q = st.session_state.get("active_quote")
-                    keys = list(labels.keys())
-                    idx = keys.index(default_q) if default_q in keys else 0
-                    qid = st.selectbox(
-                        "Quote",
-                        keys,
-                        index=idx,
-                        format_func=lambda i: labels[i],
-                        key="search_qid",
-                    )
-            with col_b:
-                # Build pick list from search hits
-                pick_labels = []
-                pick_ids = []
-                for _, r in results.head(80).iterrows():
-                    rid = int(r["id"])
-                    label = (
-                        f"#{rid} · {r.get('part_number') or '—'} · "
-                        f"{(r.get('description') or '')[:40]} · "
-                        f"{(r.get('species') or '')[:28]} · "
-                        f"{r.get('finish_state') or ''} · "
-                        f"${float(r.get('adjusted_price') or 0):,.2f}"
-                    )
-                    pick_labels.append(label)
-                    pick_ids.append(rid)
-                chosen = st.selectbox(
-                    "Price book row",
-                    range(len(pick_ids)),
-                    format_func=lambda i: pick_labels[i],
-                    key="search_pick",
+        # Always-visible add-to-quote strip
+        st.markdown("##### Add to quote")
+        qlist = svc.list_quotes(limit=50)
+        a1, a2, a3, a4 = st.columns([1.4, 2.6, 0.7, 1.0])
+        with a1:
+            if qlist.empty:
+                qid = None
+                if st.button("➕ New quote", key="search_new_q"):
+                    new_id = svc.create_quote(customer_name="Floor customer")
+                    st.session_state["active_quote"] = new_id
+                    st.rerun()
+            else:
+                labels = {
+                    int(r["id"]): f"{r['quote_number']} — {r.get('customer_name') or 'draft'}"
+                    for _, r in qlist.iterrows()
+                }
+                default_q = st.session_state.get("active_quote")
+                keys = list(labels.keys())
+                idx = keys.index(default_q) if default_q in keys else 0
+                qid = st.selectbox(
+                    "Quote",
+                    keys,
+                    index=idx,
+                    format_func=lambda i: labels[i],
+                    key="search_qid",
+                    label_visibility="collapsed",
                 )
-                row_id = pick_ids[chosen] if pick_ids else None
-                qty = st.number_input("Qty", 0.1, 999.0, 1.0, 1.0, key="search_qty")
-            if qid and row_id and st.button("Add line to quote", type="primary", key="search_add"):
-                try:
-                    svc.add_quote_line_from_id(int(qid), int(row_id), qty=float(qty))
-                    st.session_state["active_quote"] = int(qid)
-                    st.success("Added to quote — see **Quotes** tab.")
-                except Exception as e:
-                    st.error(str(e))
+        with a2:
+            pick_labels, pick_ids = [], []
+            for _, r in results.head(60).iterrows():
+                pick_ids.append(int(r["id"]))
+                pick_labels.append(
+                    f"{r.get('part_number') or '—'} · "
+                    f"{(r.get('description') or '')[:36]} · "
+                    f"{(r.get('species') or '—')[:24]} · "
+                    f"**${float(r.get('adjusted_price') or 0):,.2f}**"
+                )
+            chosen = st.selectbox(
+                "Item",
+                range(len(pick_ids)),
+                format_func=lambda i: pick_labels[i],
+                key="search_pick",
+                label_visibility="collapsed",
+            )
+            row_id = pick_ids[chosen] if pick_ids else None
+        with a3:
+            qty = st.number_input("Qty", 0.1, 999.0, 1.0, 1.0, key="search_qty")
+        with a4:
+            st.write("")  # align button
+            if st.button("Add to quote", type="primary", key="search_add", use_container_width=True):
+                if not qid:
+                    st.warning("Create a quote first.")
+                elif row_id:
+                    try:
+                        svc.add_quote_line_from_id(int(qid), int(row_id), qty=float(qty))
+                        st.session_state["active_quote"] = int(qid)
+                        st.success("Added — open **Quotes** tab.")
+                    except Exception as e:
+                        st.error(str(e))
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M")
         e1, e2, e3 = st.columns(3)
+        export_df = display.drop(columns=["id"], errors="ignore")
         with e1:
             st.download_button(
                 "⬇️ Excel",
-                svc.export_excel(view.drop(columns=["id"], errors="ignore")),
+                svc.export_excel(export_df),
                 f"pricebook_{stamp}.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         with e2:
             st.download_button(
                 "⬇️ CSV",
-                svc.export_csv(view.drop(columns=["id"], errors="ignore")),
+                svc.export_csv(export_df),
                 f"pricebook_{stamp}.csv",
                 "text/csv",
             )
         with e3:
-            pdf = svc.export_pdf(display.head(200), "Price Book Export")
+            pdf = svc.export_pdf(display.head(200), "FAF Price Book Export")
             st.download_button(
                 "⬇️ PDF (200)",
                 pdf,
@@ -548,20 +615,19 @@ with tab_batch:
 # QUOTES
 # ---------------------------------------------------------------------------
 with tab_quotes:
-    st.subheader("Quote builder")
+    st.subheader("Customer quotes")
 
-    left, right = st.columns([1, 2])
+    left, right = st.columns([1, 2.2])
 
     with left:
-        st.markdown("##### Quotes")
-        if st.button("➕ New quote"):
+        if st.button("➕ New quote", type="primary", use_container_width=True):
             qid = svc.create_quote(customer_name="New customer")
             st.session_state["active_quote"] = qid
             st.rerun()
 
         qdf = svc.list_quotes(limit=100)
         if qdf.empty:
-            st.caption("No quotes yet.")
+            st.caption("No quotes yet — create one, then add lines from Search.")
             active_id = None
         else:
             options = {
@@ -573,7 +639,7 @@ with tab_quotes:
             keys = list(options.keys())
             idx = keys.index(default) if default in keys else 0
             active_id = st.radio(
-                "Select",
+                "Your quotes",
                 keys,
                 index=idx,
                 format_func=lambda i: options[i],
@@ -584,7 +650,7 @@ with tab_quotes:
     with right:
         active_id = st.session_state.get("active_quote")
         if not active_id:
-            st.info("Create or select a quote.")
+            st.info("Create or select a quote on the left.")
         else:
             quote = svc.get_quote(int(active_id))
             if not quote:
@@ -594,7 +660,9 @@ with tab_quotes:
                 g1, g2 = st.columns(2)
                 with g1:
                     cust = st.text_input(
-                        "Customer", value=quote.get("customer_name") or "", key="qc"
+                        "Customer name",
+                        value=quote.get("customer_name") or "",
+                        key="qc",
                     )
                     phone = st.text_input(
                         "Phone", value=quote.get("customer_phone") or "", key="qp"
@@ -611,7 +679,9 @@ with tab_quotes:
                         ),
                         key="qs",
                     )
-                notes = st.text_area("Notes", value=quote.get("notes") or "", key="qn")
+                notes = st.text_area(
+                    "Notes (shows on PDF)", value=quote.get("notes") or "", key="qn"
+                )
                 d1, d2 = st.columns(2)
                 with d1:
                     disc = st.number_input(
@@ -631,7 +701,7 @@ with tab_quotes:
                         0.25,
                         key="qt",
                     )
-                if st.button("Save quote header"):
+                if st.button("💾 Save customer & totals settings"):
                     svc.update_quote(
                         int(active_id),
                         customer_name=cust,
@@ -644,56 +714,82 @@ with tab_quotes:
                     )
                     st.success("Saved.")
 
-                st.markdown("##### Lines")
+                st.markdown("##### Line items")
+                st.caption("Edit **Qty** and **Disc %** in the table, then save.")
                 lines = svc.quote_lines(int(active_id))
                 if lines.empty:
-                    st.caption("No lines — add from search below.")
+                    st.caption("No lines yet — use **Search** tab or find item below.")
                 else:
-                    st.dataframe(
-                        lines[
-                            [
-                                c
-                                for c in [
-                                    "id",
-                                    "qty",
-                                    "part_number",
-                                    "description",
-                                    "species",
-                                    "unit_retail",
-                                    "line_discount_pct",
-                                    "line_total",
-                                ]
-                                if c in lines.columns
-                            ]
-                        ],
+                    edit_cols = [
+                        c
+                        for c in [
+                            "id",
+                            "qty",
+                            "part_number",
+                            "description",
+                            "species",
+                            "unit_retail",
+                            "line_discount_pct",
+                            "line_total",
+                        ]
+                        if c in lines.columns
+                    ]
+                    edited = st.data_editor(
+                        lines[edit_cols],
                         use_container_width=True,
+                        hide_index=True,
+                        num_rows="fixed",
                         column_config=money_cols(lines),
+                        disabled=[
+                            c
+                            for c in edit_cols
+                            if c
+                            not in ("qty", "line_discount_pct")
+                        ],
+                        key=f"qedit_{active_id}",
                     )
-                    # edit line
-                    with st.expander("Edit / remove line"):
-                        lid = st.number_input(
-                            "Line id", min_value=1, value=int(lines.iloc[0]["id"])
-                        )
-                        nq = st.number_input("New qty", 0.1, 999.0, 1.0)
-                        nd = st.number_input("Line discount %", 0.0, 100.0, 0.0)
-                        e1, e2 = st.columns(2)
-                        with e1:
-                            if st.button("Update line"):
+                    b1, b2, b3 = st.columns([1.2, 1.2, 1.5])
+                    with b1:
+                        if st.button("💾 Save qty / discounts", type="primary"):
+                            for _, r in edited.iterrows():
                                 svc.update_quote_line(
-                                    int(lid), qty=nq, line_discount_pct=nd
+                                    int(r["id"]),
+                                    qty=float(r["qty"]),
+                                    line_discount_pct=float(
+                                        r.get("line_discount_pct") or 0
+                                    ),
                                 )
-                                st.rerun()
-                        with e2:
-                            if st.button("Delete line"):
-                                svc.delete_quote_line(int(lid))
-                                st.rerun()
+                            st.success("Lines updated.")
+                            st.rerun()
+                    with b2:
+                        # Remove without buried expander
+                        line_map = {
+                            int(r["id"]): (
+                                f"#{int(r['id'])} · {r.get('part_number') or '—'} · "
+                                f"{(r.get('description') or '')[:30]} · "
+                                f"${float(r.get('line_total') or 0):,.2f}"
+                            )
+                            for _, r in lines.iterrows()
+                        }
+                        del_id = st.selectbox(
+                            "Remove line",
+                            list(line_map.keys()),
+                            format_func=lambda i: line_map[i],
+                            key="qdel_pick",
+                            label_visibility="collapsed",
+                        )
+                    with b3:
+                        st.write("")
+                        if st.button("🗑 Remove selected line", use_container_width=True):
+                            svc.delete_quote_line(int(del_id))
+                            st.rerun()
 
                 totals = svc.quote_totals(int(active_id))
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Subtotal", f"${totals['subtotal']:,.2f}")
                 m2.metric("Discount", f"-${totals['discount_amount']:,.2f}")
                 m3.metric("Tax", f"${totals['tax_amount']:,.2f}")
-                m4.metric("Grand total", f"${totals['grand_total']:,.2f}")
+                m4.metric("**Grand total**", f"${totals['grand_total']:,.2f}")
 
                 x1, x2, x3 = st.columns(3)
                 with x1:
@@ -706,58 +802,59 @@ with tab_quotes:
                 with x2:
                     qpdf = svc.export_quote_pdf(int(active_id))
                     st.download_button(
-                        "⬇️ Quote PDF",
+                        "⬇️ Quote PDF (FAF branded)",
                         qpdf,
                         f"{quote.get('quote_number')}.pdf"
                         if qpdf[:4] == b"%PDF"
                         else f"{quote.get('quote_number')}.txt",
                     )
                 with x3:
-                    if st.button("🗑 Delete quote"):
+                    if st.button("🗑 Delete entire quote"):
                         svc.delete_quote(int(active_id))
                         st.session_state.pop("active_quote", None)
                         st.rerun()
 
-                st.markdown("##### Add from master")
-                sq = st.text_input("Find item", key="qfind")
-                hits = svc.search(sq, limit=30) if sq.strip() else pd.DataFrame()
+                st.markdown("##### Quick-add from master")
+                sq = st.text_input("Find item (part # or words)", key="qfind")
+                hits = (
+                    svc.search(sq, finish_state="finished", limit=30)
+                    if sq.strip()
+                    else pd.DataFrame()
+                )
                 if not hits.empty:
-                    st.dataframe(
-                        hits[
-                            [
-                                c
-                                for c in [
-                                    "id",
-                                    "vendor",
-                                    "part_number",
-                                    "description",
-                                    "species",
-                                    "base_price",
-                                    "adjusted_price",
-                                ]
-                                if c in hits.columns
-                            ]
-                        ].head(15),
-                        use_container_width=True,
-                        column_config=money_cols(hits),
-                    )
-                    hid = st.number_input(
-                        "Add pricebook id",
-                        min_value=1,
-                        value=int(hits.iloc[0]["id"]),
-                        key="qhid",
-                    )
-                    hqty = st.number_input("Qty", 0.1, 999.0, 1.0, key="qhqty")
-                    if st.button("Add to quote", type="primary"):
-                        svc.add_quote_line_from_id(
-                            int(active_id), int(hid), qty=float(hqty)
+                    pick_ids, pick_labels = [], []
+                    for _, r in hits.head(20).iterrows():
+                        pick_ids.append(int(r["id"]))
+                        pick_labels.append(
+                            f"{r.get('part_number') or '—'} · "
+                            f"{(r.get('description') or '')[:36]} · "
+                            f"{(r.get('species') or '—')[:22]} · "
+                            f"${float(r.get('adjusted_price') or 0):,.2f}"
                         )
-                        st.success("Line added.")
-                        st.rerun()
+                    h1, h2, h3 = st.columns([3, 0.7, 1])
+                    with h1:
+                        hi = st.selectbox(
+                            "Hit",
+                            range(len(pick_ids)),
+                            format_func=lambda i: pick_labels[i],
+                            key="qhit",
+                            label_visibility="collapsed",
+                        )
+                    with h2:
+                        hqty = st.number_input("Qty", 0.1, 999.0, 1.0, key="qhqty")
+                    with h3:
+                        st.write("")
+                        if st.button("Add to quote", type="primary", key="qadd"):
+                            svc.add_quote_line_from_id(
+                                int(active_id), int(pick_ids[hi]), qty=float(hqty)
+                            )
+                            st.rerun()
 
                 with st.expander("Custom line (not in book)"):
                     cd = st.text_input("Description", key="qcd")
-                    cr = st.number_input("Unit retail $", 0.0, 1_000_000.0, 0.0, key="qcr")
+                    cr = st.number_input(
+                        "Unit retail $", 0.0, 1_000_000.0, 0.0, key="qcr"
+                    )
                     cq = st.number_input("Qty", 0.1, 999.0, 1.0, key="qcq")
                     if st.button("Add custom") and cd:
                         svc.add_custom_quote_line(
@@ -772,36 +869,76 @@ with tab_quotes:
 # VENDORS
 # ---------------------------------------------------------------------------
 with tab_vendors:
-    st.subheader("Vendors & multipliers")
+    st.subheader("Builders & retail multipliers")
+    st.caption(
+        "One row per builder. Change the mult, then **Apply** to recompute that builder’s retail."
+    )
     summary = svc.vendor_summary()
     if summary.empty:
-        st.info("No vendors in master yet.")
+        st.info("No builders in master yet.")
     else:
-        st.dataframe(summary, use_container_width=True)
+        # Floor-facing table
+        nice = summary.rename(
+            columns={
+                "vendor": "Builder",
+                "rows": "Items",
+                "collections": "Collections",
+                "avg_mult": "Avg mult",
+                "saved_mult": "Saved mult",
+                "min_base": "Min wholesale",
+                "max_base": "Max wholesale",
+            }
+        )
+        show = [
+            c
+            for c in [
+                "Builder",
+                "Items",
+                "Collections",
+                "Saved mult",
+                "Min wholesale",
+                "Max wholesale",
+            ]
+            if c in nice.columns
+        ]
+        st.dataframe(
+            nice[show],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Min wholesale": st.column_config.NumberColumn(format="$%.0f"),
+                "Max wholesale": st.column_config.NumberColumn(format="$%.0f"),
+                "Saved mult": st.column_config.NumberColumn(format="%.2f"),
+                "Items": st.column_config.NumberColumn(format="%d"),
+            },
+        )
 
-    st.markdown("##### Set / recompute multiplier")
+    st.markdown("##### Change a builder’s multiplier")
     vlist = svc.list_vendors()
     if vlist:
-        vv = st.selectbox("Vendor", vlist, key="vv")
+        vv = st.selectbox("Builder", vlist, key="vv")
         cur = svc.get_vendor_multiplier(vv)
-        nm = st.number_input("Multiplier", 0.1, 20.0, float(cur), 0.1, key="vm")
-        c1, c2, c3 = st.columns(3)
+        nm = st.number_input(
+            "Retail multiplier",
+            0.1,
+            20.0,
+            float(cur),
+            0.1,
+            key="vm",
+            help="Genuine Oak is typically 1.7; most others 2.7",
+        )
+        c1, c2 = st.columns(2)
         with c1:
-            if st.button("Save multiplier"):
+            if st.button("Apply mult & recompute retail", type="primary"):
                 svc.set_vendor_multiplier(vv, float(nm))
-                st.success(f"Saved {vv} → {nm:g}")
-        with c2:
-            if st.button("Recompute this vendor retail"):
                 n = svc.reapply_multiplier(float(nm), vendor=vv)
-                svc.set_vendor_multiplier(vv, float(nm))
-                st.success(f"Updated {n:,} rows")
-        with c3:
-            if st.button("Delete vendor from master", type="secondary"):
+                st.success(f"{vv}: mult {nm:g} · {n:,} retail prices updated")
+                st.rerun()
+        with c2:
+            if st.button("Remove builder from book", type="secondary"):
                 n = svc.delete_by_vendor(vv)
                 st.warning(f"Deleted {n:,} rows for {vv}")
-
-    st.markdown("##### Saved settings table")
-    st.dataframe(svc.list_vendor_settings(), use_container_width=True)
+                st.rerun()
 
 # ---------------------------------------------------------------------------
 # ADMIN
@@ -844,13 +981,14 @@ with tab_admin:
 source ~/FAF-pricebook/.venv/bin/activate
 python -m backend.cli stats
 python -m backend.cli search "oak nightstand"
-python -m backend.cli import-xlsx FILE --vendor NAME --use-markup --mode upsert
-python -m backend.cli batch FOLDER --excel-only --mode upsert
-python -m backend.cli dups
+python -m backend.cli import-xlsx FILE --vendor NAME --mode replace_vendor
+python -m backend.cli batch FOLDER --excel-only --mode replace_vendor
+python -m backend.cli backup-db
+python -m backend.cli standardize
         """.strip()
     )
 
 st.caption(
-    "FAF Price Book v2.0 · Search · Import · Batch · Quotes · Vendors · Admin · "
-    "backend.PriceBookService"
+    "FAF Price Book · Foothills Amish Furniture · "
+    "Search · Quotes · Import · one builder = one catalog"
 )

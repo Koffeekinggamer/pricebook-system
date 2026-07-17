@@ -412,10 +412,23 @@ class QuoteRepository:
         pdf = FPDF(orientation="P", unit="mm", format="Letter")
         pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
-        pdf.set_font("Helvetica", "B", 16)
-        self._cell(pdf, 0, 10, "Price Quote", ln=True)
+
+        # FAF brand header
+        pdf.set_fill_color(45, 74, 48)  # deep green
+        pdf.rect(0, 0, 216, 28, "F")
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_xy(12, 8)
+        pdf.set_font("Helvetica", "B", 18)
+        self._cell(pdf, 0, 8, "FOOTHILLS AMISH FURNITURE", ln=True)
+        pdf.set_x(12)
+        pdf.set_font("Helvetica", "", 10)
+        self._cell(pdf, 0, 5, "Customer Price Quote", ln=True)
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_y(34)
+
+        pdf.set_font("Helvetica", "B", 12)
+        self._cell(pdf, 0, 7, _pdf_safe(f"Quote #: {q.get('quote_number') or ''}"), ln=True)
         pdf.set_font("Helvetica", "", 11)
-        self._cell(pdf, 0, 6, _pdf_safe(f"Quote #: {q.get('quote_number') or ''}"), ln=True)
         self._cell(pdf, 0, 6, _pdf_safe(f"Customer: {q.get('customer_name') or ''}"), ln=True)
         if q.get("customer_phone"):
             self._cell(pdf, 0, 6, _pdf_safe(f"Phone: {q['customer_phone']}"), ln=True)
@@ -430,18 +443,19 @@ class QuoteRepository:
         )
         pdf.ln(4)
 
-        # header
+        # column header band
+        pdf.set_fill_color(232, 236, 230)
         pdf.set_font("Helvetica", "B", 8)
         cols = [
             ("Qty", 12),
             ("Part #", 28),
             ("Description", 70),
-            ("Species", 35),
+            ("Wood / Option", 35),
             ("Each", 22),
             ("Total", 22),
         ]
         for label, w in cols:
-            pdf.cell(w, 7, label, border=1)
+            pdf.cell(w, 7, label, border=1, fill=True)
         pdf.ln()
 
         pdf.set_font("Helvetica", "", 8)
@@ -483,8 +497,10 @@ class QuoteRepository:
                 f"Tax ({totals['tax_pct']:g}%): ${totals['tax_amount']:,.2f}",
                 ln=True,
             )
-        pdf.set_font("Helvetica", "B", 12)
-        self._cell(pdf, 0, 8, f"Grand Total: ${totals['grand_total']:,.2f}", ln=True)
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.set_text_color(45, 74, 48)
+        self._cell(pdf, 0, 9, f"Grand Total: ${totals['grand_total']:,.2f}", ln=True)
+        pdf.set_text_color(0, 0, 0)
 
         if q.get("notes"):
             pdf.ln(4)
@@ -497,7 +513,7 @@ class QuoteRepository:
             pdf,
             0,
             5,
-            "Prices subject to change. Thank you for your business.",
+            "Foothills Amish Furniture — prices subject to change. Thank you for your business.",
             ln=True,
         )
 
