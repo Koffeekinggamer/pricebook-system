@@ -127,6 +127,34 @@ def get_service() -> PriceBookService:
     return svc
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def _wood_dropdown_options(vendor_key: str) -> list:
+    """Cached wood list for the Search Wood selectbox (never empty)."""
+    svc = get_service()
+    v = None if not vendor_key or vendor_key == "All" else vendor_key
+    try:
+        woods = list(svc.list_species(vendor=v) or [])
+    except Exception:
+        woods = []
+    # Guaranteed baseline so the dropdown always populates
+    if not woods:
+        woods = [
+            "Oak",
+            "Red Oak",
+            "White Oak",
+            "Brown Maple",
+            "Hard Maple",
+            "Cherry",
+            "Walnut",
+            "Hickory",
+            "Elm",
+            "QSWO",
+            "Rustic Cherry",
+            "Wormy Maple",
+        ]
+    return woods
+
+
 svc = get_service()
 
 # ---------------------------------------------------------------------------
@@ -397,18 +425,15 @@ with tab_search:
         with f1:
             vf = st.selectbox("Builder", vendors, key="sv")
         with f2:
-            # Wood — one selectable species for any builder (tiers expand into atoms)
-            wood_src = None if vf == "All" else vf
-            try:
-                wood_list = svc.list_species(vendor=wood_src)
-            except Exception:
-                wood_list = []
-            wood_opts = ["All"] + wood_list
-            if st.session_state.get("sw") not in wood_opts:
+            # Wood — selectable species for every builder (cached; always has options)
+            wood_list = _wood_dropdown_options(vf if vf else "All")
+            wood_opts = ["All"] + [w for w in wood_list if w and w != "All"]
+            # Keep session value valid for this option set (before widget binds)
+            if "sw" in st.session_state and st.session_state["sw"] not in wood_opts:
                 st.session_state["sw"] = "All"
             wf = st.selectbox(
                 "Wood",
-                wood_opts,
+                options=wood_opts,
                 key="sw",
                 help="Select one wood for any builder. Multi-wood price tiers "
                 "(Elm / Cherry / Maple) match when they include that wood.",

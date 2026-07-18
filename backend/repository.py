@@ -88,12 +88,39 @@ class PriceBookRepository:
                 ).fetchall()
         return [r[0] for r in rows]
 
-    # Tokens that mark a real wood / outdoor option for the Wood dropdown
+    # Core woods always offered in the dropdown (even if rare in current filter)
+    _CORE_WOODS = (
+        "Oak",
+        "Red Oak",
+        "White Oak",
+        "Brown Maple",
+        "Hard Maple",
+        "Soft Maple",
+        "Maple",
+        "Cherry",
+        "Sap Cherry",
+        "Walnut",
+        "Hickory",
+        "Elm",
+        "QSWO",
+        "Quarter Sawn White Oak",
+        "Rustic Cherry",
+        "Rustic Hickory",
+        "Rustic Walnut",
+        "Rustic QSWO",
+        "Wormy Maple",
+        "Birch",
+        "Ash",
+        "Alder",
+        "Pine",
+        "Cedar",
+        "Barnwood",
+    )
     _WOOD_DROPDOWN_RE = re.compile(
         r"(?i)\b("
         r"oak|maple|cherry|walnut|hickory|elm|birch|ash|poplar|pine|alder|"
         r"beech|mahogany|qswo|pswo|qsw|wormy|rustic|brown\s*maple|hard\s*maple|"
-        r"soft\s*maple|white\s*oak|red\s*oak|sap\s*cherry|quarter|1/?4\s*sawn|"
+        r"soft\s*maple|white\s*oak|red\s*oak|sap\s*cherry|quarter\s*sawn|"
         r"rough\s*sawn|ruff\s*sawn|barnwood|cedar|poly|woodgrain|fabric|leather|"
         r"paint|black|white\s*maple|grey\s*elm|gray\s*elm"
         r")\b"
@@ -102,7 +129,7 @@ class PriceBookRepository:
         r"(?i)^("
         r"[\d$#+%.\-\"']+|"
         r"and|or|the|with|also|add|option|species|stain|part|number|color|"
-        r"r\.?|combo|standard|premium|unf\.?|fin\.?|wood|tier"
+        r"r\.?|combo|standard|premium|unf\.?|fin\.?|wood|tier|quarter"
         r")$"
     )
 
@@ -112,41 +139,45 @@ class PriceBookRepository:
 
         Multi-wood price tiers ("Oak / Cherry / Maple") are split into
         selectable single woods so staff can filter by one species across
-        every builder. Junk tokens (prices, %, page notes) are dropped.
+        every builder. Always includes a core wood list so the dropdown
+        is never empty.
         """
-        with self._conn() as conn:
-            if vendor and vendor != "All":
-                rows = conn.execute(
-                    "SELECT DISTINCT species FROM pricebook "
-                    "WHERE species IS NOT NULL AND TRIM(species) != '' "
-                    "AND vendor = ?",
-                    (vendor,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT DISTINCT species FROM pricebook "
-                    "WHERE species IS NOT NULL AND TRIM(species) != ''"
-                ).fetchall()
-        atomic: set[str] = set()
-        for (raw,) in rows:
-            s = str(raw).strip()
-            if not s:
-                continue
-            # Prefer whole single-wood labels that already look clean
-            if " / " not in s and "/" not in s:
-                if self._is_wood_dropdown_label(s):
-                    atomic.add(s)
-                continue
-            # Split multi-wood tiers
-            parts = [p.strip() for p in re.split(r"\s*/\s*", s) if p.strip()]
-            for p in parts:
-                if self._is_wood_dropdown_label(p):
-                    atomic.add(p)
+        atomic: set[str] = set(self._CORE_WOODS)
+        try:
+            with self._conn() as conn:
+                if vendor and vendor not in ("All", "", None):
+                    rows = conn.execute(
+                        "SELECT DISTINCT species FROM pricebook "
+                        "WHERE species IS NOT NULL AND TRIM(species) != '' "
+                        "AND vendor = ?",
+                        (vendor,),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT DISTINCT species FROM pricebook "
+                        "WHERE species IS NOT NULL AND TRIM(species) != ''"
+                    ).fetchall()
+            for (raw,) in rows:
+                s = str(raw).strip()
+                if not s:
+                    continue
+                # Split multi-wood tiers on " / " or "/"
+                if " / " in s or (s.count("/") >= 1 and not re.search(r"\d/\d", s)):
+                    parts = [p.strip() for p in re.split(r"\s*/\s*", s) if p.strip()]
+                else:
+                    parts = [s]
+                for p in parts:
+                    if self._is_wood_dropdown_label(p):
+                        atomic.add(p)
+        except Exception:
+            # Still return core woods so the UI dropdown never fails closed
+            pass
+
         # Prefer Title Case for duplicates that only differ by case
         by_low: dict[str, str] = {}
         for p in atomic:
             k = p.lower()
-            if k not in by_low or (p[0].isupper() and not by_low[k][0].isupper()):
+            if k not in by_low or (p[:1].isupper() and not by_low[k][:1].isupper()):
                 by_low[k] = p
         return sorted(by_low.values(), key=lambda x: x.lower())
 
@@ -159,21 +190,8 @@ class PriceBookRepository:
             return False
         if re.search(r"[@$%]|\+\d|option:|stain part", p, re.I):
             return False
-        # Must look like a wood / known option, not a SKU or note
         if self._WOOD_DROPDOWN_RE.search(p):
             return True
-        # Short title-case option labels (e.g. "Black", "Cedar")
-        if re.fullmatch(r"[A-Za-z][A-Za-z \-]{1,30}", p) and not re.search(
-            r"(?i)drawer|table|chair|desk|bench|unit|style|bedroom", p
-        ):
-            # Only keep if it has a wood-ish or color-ish word length
-            return bool(
-                re.search(
-                    r"(?i)oak|maple|cherry|walnut|hickory|elm|cedar|poly|black|"
-                    r"white|paint|fabric|leather|rustic|wormy|qswo",
-                    p,
-                )
-            )
         return False
 
     def list_source_files(self) -> list[str]:
