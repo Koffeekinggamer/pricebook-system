@@ -19,15 +19,17 @@ from backend.import_service import ExcelImportPreview, ImportService, PdfImportP
 from backend.normalize import map_columns, read_excel_bytes
 from backend.quotes import QuoteRepository
 from backend.repository import PriceBookRepository
+from backend.users import UserRepository
 
 
 class PriceBookService:
-    """Single entry point: catalog, import, pricing, quotes, batch, export."""
+    """Single entry point: catalog, import, pricing, quotes, users, batch, export."""
 
     def __init__(self, db_path: Optional[Union[str, Path]] = None):
         self.db_path = Path(db_path) if db_path else DB_PATH
         self.repo = PriceBookRepository(self.db_path)
         self.quotes = QuoteRepository(self.db_path)
+        self.users = UserRepository(self.db_path)
         self.imports = ImportService()
         self.batch = BatchImporter(self.repo, self.imports)
         self._ready = False
@@ -35,6 +37,13 @@ class PriceBookService:
     # ------------------------------------------------------------------ lifecycle
     def init(self) -> Path:
         path = init_db(self.db_path)
+        # Seed admin if empty (OrderTrac sync builds the rest)
+        try:
+            from backend.auth import ensure_seed_admin
+
+            ensure_seed_admin(self.db_path)
+        except Exception:
+            pass
         self._ready = True
         return path
 
@@ -449,13 +458,28 @@ class PriceBookService:
         *,
         qty: float = 1.0,
         line_discount_pct: float = 0.0,
+        notes: str = "",
+        species_override: Optional[str] = None,
+        stain: str = "",
+        finish_override: Optional[str] = None,
     ) -> int:
+        """Add a catalog row to a quote; optional wood/stain/finish for the line."""
         self.ensure_ready()
         row = self.repo.get_row_by_id(pricebook_id)
         if not row:
             raise ValueError(f"No pricebook row id={pricebook_id}")
+        row = dict(row)
+        if species_override:
+            row["species"] = species_override
+        if finish_override:
+            row["finish_state"] = finish_override
+        note_bits = [n for n in (notes, f"Stain: {stain}" if stain else "") if n]
         return self.quotes.add_line_from_pricebook(
-            quote_id, row, qty=qty, line_discount_pct=line_discount_pct
+            quote_id,
+            row,
+            qty=qty,
+            line_discount_pct=line_discount_pct,
+            notes=" · ".join(note_bits) if note_bits else "",
         )
 
     def add_quote_line_from_row(
@@ -477,6 +501,202 @@ class PriceBookService:
     def delete_quote_line(self, line_id: int) -> None:
         self.ensure_ready()
         self.quotes.delete_line(line_id)
+
+    # ------------------------------------------------------------------ users / OrderTrac
+    def list_app_users(self, *, active_only: bool = False) -> pd.DataFrame:
+        self.ensure_ready()
+        return self.users.list_users(active_only=active_only)
+
+    def create_app_user(self, **kwargs) -> int:
+        self.ensure_ready()
+        return self.users.create_user(**kwargs)
+
+    def update_app_user(self, user_id: int, **kwargs) -> None:
+        self.ensure_ready()
+        self.users.update_user(user_id, **kwargs)
+
+    def set_app_user_password(
+        self, user_id: int, password: str, *, must_change: bool = False
+    ) -> None:
+        self.ensure_ready()
+        self.users.set_password(user_id, password, must_change=must_change)
+
+    def ordertrac_connection_status(self) -> dict:
+        """Secrets + session file status (no browser)."""
+        from backend.ordertrac_connect import connection_status
+
+        st = connection_status()
+        self.ensure_ready()
+        integ = self.users.get_integration("ordertrac") or {}
+        st["integration"] = integ
+        st["faf_user_count"] = self.users.count()
+        return st
+
+    def ordertrac_check_session(self) -> dict:
+        from backend.ordertrac_connect import check_session
+
+        self.ensure_ready()
+        result = check_session(headless=True)
+        self.users.set_integration(
+            "ordertrac",
+            status="connected" if result.get("ok") else "error",
+            last_error=result.get("error") or "",
+            meta={"check": result},
+            ok=bool(result.get("ok")),
+        )
+        return result
+
+    def sync_users_from_ordertrac(self, *, default_role: str = "sales") -> dict:
+        """Pull OrderTrac sales users into app_users."""
+        from backend.ordertrac_connect import sync_users_to_faf
+
+        self.ensure_ready()
+        return sync_users_to_faf(
+            self.db_path, headless=True, default_role=default_role
+        )
+
+    def push_quote_to_ordertrac(
+        self,
+        quote_id: int,
+        *,
+        ot_user_display: str = "Miller, Judson",
+        location: str = "Landrum",
+        headless: bool = True,
+        mode: str = "create",
+    ) -> dict:
+        """
+        Send FAF quote lines to OrderTrac as a QUOTE (never a sale).
+
+        mode:
+          - "create": always open a new OrderTrac quote with all FAF lines
+          - "append": open the linked OrderTrac quote (if any) and add lines
+            that are not already present (by FAF #id / SKU)
+        """
+        from datetime import datetime
+
+        from backend.ordertrac_push import (
+            build_payload_from_faf_quote,
+            push_quote_to_ordertrac,
+        )
+
+        self.ensure_ready()
+        q = self.quotes.get_quote(quote_id)
+        if not q:
+            raise ValueError(f"No FAF quote id={quote_id}")
+        lines = self.quotes.list_lines(quote_id)
+        if lines is None or lines.empty:
+            return {
+                "ok": False,
+                "error": "Quote has no lines — add items from Search first",
+            }
+
+        existing_guid = (q.get("ordertrac_guid") or "").strip()
+        mode = (mode or "create").lower().strip()
+        if mode == "append":
+            if not existing_guid:
+                return {
+                    "ok": False,
+                    "error": "No linked OrderTrac quote yet — use Create first",
+                }
+            use_guid = existing_guid
+            skip_existing = True
+        else:
+            use_guid = None
+            skip_existing = False
+
+        payload = build_payload_from_faf_quote(
+            q,
+            lines,
+            ot_user_display=ot_user_display,
+            location=location,
+            project=q.get("quote_number") or f"FAF-{quote_id}",
+        )
+        if q.get("customer_name"):
+            payload["customer_name"] = q["customer_name"]
+        if q.get("customer_phone"):
+            payload["customer_phone"] = q["customer_phone"]
+        if q.get("customer_email"):
+            payload["customer_email"] = q["customer_email"]
+
+        result = push_quote_to_ordertrac(
+            payload,
+            headless=headless,
+            sales_order_guid=use_guid,
+            skip_existing_lines=skip_existing,
+        )
+        if result.get("ok") or result.get("guid"):
+            self.quotes.update_quote(
+                quote_id,
+                ordertrac_guid=result.get("guid") or existing_guid,
+                ordertrac_so_id=str(
+                    result.get("sales_order_id") or q.get("ordertrac_so_id") or ""
+                )
+                or None,
+                ordertrac_url=result.get("url") or q.get("ordertrac_url"),
+                ordertrac_pushed_at=datetime.now().isoformat(timespec="seconds"),
+                status="sent" if result.get("ok") else q.get("status") or "draft",
+            )
+        self.users.set_integration(
+            "ordertrac",
+            status="connected" if result.get("ok") else "error",
+            last_error=result.get("error") or "",
+            meta={"last_push": result, "faf_quote_id": quote_id, "mode": mode},
+            ok=bool(result.get("ok")),
+        )
+        result["faf_quote_id"] = quote_id
+        result["faf_quote_number"] = q.get("quote_number")
+        result["mode"] = mode
+        return result
+
+    def push_rows_to_ordertrac(
+        self,
+        rows: list[dict],
+        *,
+        qtys: Optional[list[float]] = None,
+        wood: str = "",
+        stain: str = "",
+        finish: str = "",
+        project: str = "FAF Price Book push",
+        notes: str = "",
+        ot_user_display: str = "Miller, Judson",
+        location: str = "Landrum",
+        customer_name: str = "FAF Floor Quote",
+        headless: bool = True,
+    ) -> dict:
+        """Push selected pricebook rows as a new OrderTrac QUOTE."""
+        from backend.ordertrac_push import line_from_pricebook_row, push_quote_to_ordertrac
+
+        self.ensure_ready()
+        if not rows:
+            return {"ok": False, "error": "No rows"}
+        qtys = qtys or [1.0] * len(rows)
+        lines = []
+        for i, row in enumerate(rows):
+            q = qtys[i] if i < len(qtys) else 1.0
+            lines.append(
+                line_from_pricebook_row(
+                    row, qty=q, wood=wood, stain=stain, finish=finish
+                )
+            )
+        payload = {
+            "type": "QUOTE",
+            "customer_name": customer_name,
+            "project": project,
+            "notes": notes
+            or "Pushed from FAF Price Book. DO NOT convert to sale unless authorized.",
+            "user_display": ot_user_display,
+            "location": location,
+            "lines": lines,
+        }
+        result = push_quote_to_ordertrac(payload, headless=headless)
+        self.users.set_integration(
+            "ordertrac",
+            status="connected" if result.get("ok") else "error",
+            last_error=result.get("error") or "",
+            meta={"last_push": result},
+            ok=bool(result.get("ok")),
+        )
+        return result
 
     def export_quote_excel(self, quote_id: int) -> bytes:
         self.ensure_ready()

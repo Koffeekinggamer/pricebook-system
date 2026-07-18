@@ -106,6 +106,10 @@ class QuoteRepository:
             "notes",
             "discount_pct",
             "tax_pct",
+            "ordertrac_guid",
+            "ordertrac_so_id",
+            "ordertrac_url",
+            "ordertrac_pushed_at",
         }
         sets = []
         vals = []

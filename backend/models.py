@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS quotes (
     notes TEXT,
     discount_pct REAL DEFAULT 0,
     tax_pct REAL DEFAULT 0,
+    ordertrac_guid TEXT,
+    ordertrac_so_id TEXT,
+    ordertrac_url TEXT,
+    ordertrac_pushed_at TEXT,
     created_at TEXT,
     updated_at TEXT
 );
@@ -82,6 +86,40 @@ CREATE TABLE IF NOT EXISTS quote_lines (
 
 CREATE INDEX IF NOT EXISTS idx_quote_lines_quote
     ON quote_lines (quote_id);
+
+-- Multi-user accounts (synced from OrderTrac and/or created locally)
+CREATE TABLE IF NOT EXISTS app_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    display_name TEXT,
+    email TEXT,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'sales',
+    active INTEGER NOT NULL DEFAULT 1,
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    ordertrac_user_guid TEXT,
+    ordertrac_display_name TEXT,
+    source TEXT DEFAULT 'local',
+    last_login_at TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_users_username
+    ON app_users (username);
+
+CREATE INDEX IF NOT EXISTS idx_app_users_ot_guid
+    ON app_users (ordertrac_user_guid);
+
+-- OrderTrac connection status / last sync metadata (credentials stay in secrets)
+CREATE TABLE IF NOT EXISTS integrations (
+    key TEXT PRIMARY KEY,
+    status TEXT,
+    last_ok_at TEXT,
+    last_error TEXT,
+    meta_json TEXT,
+    updated_at TEXT
+);
 """
 
 # Columns added after early v1 — migrate existing DBs (pricebook table)
@@ -97,6 +135,14 @@ NEW_COLUMNS = {
 # Columns added after early v1 — migrate existing DBs (vendors table)
 VENDOR_NEW_COLUMNS = {
     "phone": "TEXT",
+}
+
+# Columns added for OrderTrac quote push link-back
+QUOTE_NEW_COLUMNS = {
+    "ordertrac_guid": "TEXT",
+    "ordertrac_so_id": "TEXT",
+    "ordertrac_url": "TEXT",
+    "ordertrac_pushed_at": "TEXT",
 }
 
 PRICEBOOK_COLS = [

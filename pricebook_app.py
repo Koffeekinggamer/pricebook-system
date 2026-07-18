@@ -19,7 +19,7 @@ import pandas as pd
 import streamlit as st
 
 from backend import PriceBookService
-from backend.auth import check_login
+from backend.auth import login_user
 from backend.config import APP_DIR, DEFAULT_MULTIPLIER, DEFAULT_SEARCH_LIMIT
 
 if str(APP_DIR) not in sys.path:
@@ -87,6 +87,9 @@ def _require_login() -> bool:
         <div style="max-width:420px;margin:4rem auto 1rem auto;text-align:center;">
           <div style="font-size:2rem;font-weight:700;color:#2d4a30;">FAF Price Book</div>
           <div style="color:#555;margin-top:0.25rem;">Foothills Amish Furniture · sign in to continue</div>
+          <div style="color:#888;margin-top:0.5rem;font-size:0.9rem;">
+            Use your FAF username (OrderTrac staff accounts after Admin sync)
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -103,9 +106,14 @@ def _require_login() -> bool:
                 "Sign in", type="primary", use_container_width=True
             )
             if submitted:
-                if check_login(user, pw):
+                session = login_user(user, pw)
+                if session:
                     st.session_state["authenticated"] = True
-                    st.session_state["auth_user"] = user.strip()
+                    st.session_state["auth_user"] = session["username"]
+                    st.session_state["auth_display"] = session.get("display_name")
+                    st.session_state["auth_role"] = session.get("role") or "sales"
+                    st.session_state["auth_user_id"] = session.get("user_id")
+                    st.session_state["auth_session"] = session
                     st.rerun()
                 else:
                     st.error("Incorrect username or password.")
@@ -115,15 +123,52 @@ def _require_login() -> bool:
 if not _require_login():
     st.stop()
 
+# Force password change for OrderTrac-synced accounts
+_auth_sess = st.session_state.get("auth_session") or {}
+if _auth_sess.get("must_change_password") and st.session_state.get("auth_user_id"):
+    st.warning("You must set a new password before continuing.")
+    with st.form("force_pw_change"):
+        npw = st.text_input("New password", type="password")
+        npw2 = st.text_input("Confirm new password", type="password")
+        if st.form_submit_button("Save new password", type="primary"):
+            if not npw or len(npw) < 6:
+                st.error("Password must be at least 6 characters.")
+            elif npw != npw2:
+                st.error("Passwords do not match.")
+            else:
+                _svc_tmp = PriceBookService()
+                _svc_tmp.init()
+                _svc_tmp.set_app_user_password(
+                    int(st.session_state["auth_user_id"]), npw, must_change=False
+                )
+                st.session_state["auth_session"]["must_change_password"] = False
+                st.success("Password updated.")
+                st.rerun()
+    st.stop()
+
 # ---------------------------------------------------------------------------
 # Service (after login)
 # ---------------------------------------------------------------------------
 
+# Bump when PriceBookService gains methods that Admin/OrderTrac need.
+# Stale @st.cache_resource instances omit new methods until cache is cleared.
+_SERVICE_CACHE_VERSION = 3
+
 
 @st.cache_resource
-def get_service() -> PriceBookService:
+def get_service(_cache_version: int = _SERVICE_CACHE_VERSION) -> PriceBookService:
+    """Cached service; version arg forces rebuild after code deploys."""
     svc = PriceBookService()
     svc.init()
+    return svc
+
+
+def _svc() -> PriceBookService:
+    """Return a live service; auto-clear cache if OrderTrac methods are missing."""
+    svc = get_service(_SERVICE_CACHE_VERSION)
+    if not hasattr(svc, "ordertrac_connection_status"):
+        get_service.clear()
+        svc = get_service(_SERVICE_CACHE_VERSION)
     return svc
 
 
@@ -135,7 +180,7 @@ def _wood_dropdown_options(vendor_key: str) -> list:
     Builder = All → woods across the whole book.
     Specific builder → only species that appear in that builder's rows.
     """
-    svc = get_service()
+    svc = _svc()
     v = None if not vendor_key or vendor_key == "All" else vendor_key
     try:
         woods = list(svc.list_species(vendor=v) or [])
@@ -144,7 +189,7 @@ def _wood_dropdown_options(vendor_key: str) -> list:
     return woods
 
 
-svc = get_service()
+svc = _svc()
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -325,11 +370,55 @@ def _save_favorites(names: list[str]) -> None:
 # Sidebar
 # ---------------------------------------------------------------------------
 
+def _ensure_active_quote() -> int:
+    """Return active quote id; create a draft if none."""
+    qid = st.session_state.get("active_quote_id")
+    if qid:
+        q = svc.get_quote(int(qid))
+        if q:
+            return int(qid)
+    qid = svc.create_quote(
+        customer_name="",
+        notes="Draft quote from FAF Price Book",
+    )
+    st.session_state["active_quote_id"] = int(qid)
+    return int(qid)
+
+
+def _quote_sidebar_badge() -> None:
+    qid = st.session_state.get("active_quote_id")
+    if not qid:
+        return
+    try:
+        t = svc.quote_totals(int(qid))
+        q = svc.get_quote(int(qid)) or {}
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("##### FAF → OrderTrac quote")
+        st.sidebar.caption(
+            f"**{q.get('quote_number') or qid}** · {t.get('line_count', 0)} lines"
+        )
+        st.sidebar.metric("Quote total", f"${t.get('grand_total', 0):,.2f}")
+        if q.get("ordertrac_so_id"):
+            st.sidebar.caption(f"OrderTrac QUOTE **#{q.get('ordertrac_so_id')}**")
+            if q.get("ordertrac_url"):
+                st.sidebar.markdown(f"[Open in OrderTrac]({q['ordertrac_url']})")
+    except Exception:
+        pass
+
+
 st.sidebar.title("FAF Price Book")
-who = st.session_state.get("auth_user") or "user"
-st.sidebar.caption(f"Signed in as **{who}**")
+who = st.session_state.get("auth_display") or st.session_state.get("auth_user") or "user"
+role = st.session_state.get("auth_role") or "sales"
+st.sidebar.caption(f"Signed in as **{who}** · `{role}`")
 if st.sidebar.button("Sign out"):
-    for k in ("authenticated", "auth_user"):
+    for k in (
+        "authenticated",
+        "auth_user",
+        "auth_display",
+        "auth_role",
+        "auth_user_id",
+        "auth_session",
+    ):
         st.session_state.pop(k, None)
     st.rerun()
 
@@ -338,6 +427,7 @@ st.sidebar.metric("Master rows", f"{stats['rows']:,}")
 st.sidebar.caption(
     f"{stats['vendors']} vendors · {stats['collections']} collections"
 )
+_quote_sidebar_badge()
 # Viztech sync status lives under Admin only (hidden from floor sidebar)
 
 # ---------------------------------------------------------------------------
@@ -360,9 +450,10 @@ with d3:
 # TABS
 # ===========================================================================
 
-tab_search, tab_import, tab_vendors, tab_admin = st.tabs(
+tab_search, tab_quote, tab_import, tab_vendors, tab_admin = st.tabs(
     [
         "Search",
+        "OrderTrac quote",
         "Drop files",
         "Vendors",
         "Admin",
@@ -412,16 +503,9 @@ with tab_search:
                 ):
                     st.session_state["pin_panel_open"] = True
                     st.rerun()
-        st.caption(
-            "**Boolean search** across every pricelist field (part #, description, "
-            "collection, wood, builder, …).  \n"
-            "`oak nightstand` = AND · `oak OR maple` · `nightstand NOT dust` · "
-            '`"bar stool"` phrase · `(oak OR cherry) chair` · SKUs rank first.'
-        )
-
         q = st.text_input(
             "Search the master book",
-            placeholder='VECG  ·  oak nightstand  ·  oak OR maple  ·  "bar stool"  ·  chair NOT dust',
+            placeholder="Part # or product words…",
             key="sq",
             label_visibility="collapsed",
         )
@@ -576,6 +660,76 @@ with tab_search:
                 height=480,
             )
 
+            # ---- Add FAF selection → OrderTrac quote cart ----
+            if "id" in results.columns and not results.empty:
+                st.markdown("##### Add to OrderTrac quote (from FAF price)")
+                st.caption(
+                    "Selections come from **this FAF price book** (retail = wholesale × mult). "
+                    "Build the cart here, then open **OrderTrac quote** tab → "
+                    "**Create OrderTrac quote**."
+                )
+                labels = []
+                id_by_label = {}
+                for _, r in results.head(80).iterrows():
+                    rid = int(r["id"])
+                    part = str(r.get("part_number") or "")[:28]
+                    desc = str(r.get("description") or "")[:36]
+                    retail = float(r.get("adjusted_price") or 0)
+                    lab = f"#{rid} · {part} · ${retail:,.0f} · {desc}"
+                    labels.append(lab)
+                    id_by_label[lab] = rid
+                aq1, aq2, aq3, aq4 = st.columns([3.2, 0.8, 1.4, 1.2])
+                with aq1:
+                    pick = st.selectbox(
+                        "FAF catalog line",
+                        labels,
+                        key="add_quote_pick",
+                        label_visibility="collapsed",
+                    )
+                with aq2:
+                    add_qty = st.number_input(
+                        "Qty", min_value=0.5, value=1.0, step=1.0, key="add_quote_qty"
+                    )
+                with aq3:
+                    add_stain = st.text_input(
+                        "Stain (optional)",
+                        value=st.session_state.get("quote_stain_default", ""),
+                        key="add_quote_stain",
+                        placeholder="e.g. Michael's Cherry",
+                    )
+                with aq4:
+                    st.write("")
+                    st.write("")
+                    if st.button(
+                        "Add from FAF → quote",
+                        type="primary",
+                        key="btn_add_to_quote",
+                        use_container_width=True,
+                    ):
+                        try:
+                            qid = _ensure_active_quote()
+                            rid = id_by_label[pick]
+                            wood_sel = None if wf == "All" else wf
+                            finish_sel = None if ff == "All" else ff
+                            svc.add_quote_line_from_id(
+                                qid,
+                                rid,
+                                qty=float(add_qty),
+                                species_override=wood_sel,
+                                finish_override=finish_sel,
+                                stain=(add_stain or "").strip(),
+                            )
+                            st.session_state["quote_stain_default"] = (
+                                add_stain or ""
+                            ).strip()
+                            qn = (svc.get_quote(qid) or {}).get("quote_number")
+                            st.success(
+                                f"Added FAF #{rid} → **{qn}** · open **OrderTrac quote** tab when ready"
+                            )
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Could not add line: {exc}")
+
     # ---- Separate pinned-builders column (collapsible) ----
     if pin_col is not None:
         with pin_col:
@@ -612,6 +766,528 @@ with tab_search:
                         st.rerun()
                 if st.button("Clear pins", key="clear_all_pins", use_container_width=True):
                     _save_favorites([])
+                    st.rerun()
+
+# ---------------------------------------------------------------------------
+# ORDERTRAC QUOTE — FAF price book is source; OrderTrac is destination
+# ---------------------------------------------------------------------------
+with tab_quote:
+    st.subheader("OrderTrac quote (from FAF Price Book)")
+    st.markdown(
+        """
+**Flow:** **Search** FAF prices → **Add from FAF → quote** → review here →
+**Create OrderTrac quote** (type stays **Quote**, never a sale).
+
+Prices always come from the FAF master book (wholesale × mult). OrderTrac
+receives custom lines with FAF id, wood, stain, finish, and retail.
+"""
+    )
+
+    # ---- Quote picker / new ----
+    qlist = svc.list_quotes(limit=50)
+    q_options = ["— New FAF quote —"]
+    q_id_map = {"— New FAF quote —": None}
+    if qlist is not None and not qlist.empty:
+        for _, qr in qlist.iterrows():
+            ot_tag = ""
+            if qr.get("ordertrac_so_id"):
+                ot_tag = f" · OT #{qr.get('ordertrac_so_id')}"
+            lab = (
+                f"{qr.get('quote_number')} · "
+                f"{qr.get('customer_name') or '(no customer)'} · "
+                f"{int(qr.get('line_count') or 0)} lines · "
+                f"${float(qr.get('lines_subtotal') or 0):,.0f}{ot_tag}"
+            )
+            q_options.append(lab)
+            q_id_map[lab] = int(qr["id"])
+
+    active = st.session_state.get("active_quote_id")
+    default_ix = 0
+    if active:
+        for i, lab in enumerate(q_options):
+            if q_id_map.get(lab) == int(active):
+                default_ix = i
+                break
+
+    qc1, qc2, qc3 = st.columns([2.5, 1, 1])
+    with qc1:
+        q_pick = st.selectbox(
+            "FAF quote (staging for OrderTrac)",
+            q_options,
+            index=min(default_ix, len(q_options) - 1),
+            key="quote_open_pick",
+        )
+    with qc2:
+        st.write("")
+        st.write("")
+        if st.button("Open / create", type="primary", use_container_width=True):
+            if q_pick == "— New FAF quote —" or q_id_map.get(q_pick) is None:
+                st.session_state["active_quote_id"] = svc.create_quote(
+                    notes="FAF Price Book → OrderTrac quote"
+                )
+            else:
+                st.session_state["active_quote_id"] = q_id_map[q_pick]
+            st.rerun()
+    with qc3:
+        st.write("")
+        st.write("")
+        if st.button("New blank quote", use_container_width=True):
+            st.session_state["active_quote_id"] = svc.create_quote(
+                notes="FAF Price Book → OrderTrac quote"
+            )
+            st.rerun()
+
+    qid = st.session_state.get("active_quote_id")
+    if not qid:
+        st.info(
+            "1) Create a quote · 2) **Search** tab → **Add from FAF → quote** · "
+            "3) Come back here → **Create OrderTrac quote**."
+        )
+    else:
+        quote = svc.get_quote(int(qid))
+        if not quote:
+            st.warning("Quote not found — create a new one.")
+            st.session_state.pop("active_quote_id", None)
+        else:
+            # OrderTrac link banner
+            if quote.get("ordertrac_url") or quote.get("ordertrac_so_id"):
+                so = quote.get("ordertrac_so_id") or "—"
+                st.success(
+                    f"Linked to OrderTrac **QUOTE #{so}** · "
+                    f"pushed {quote.get('ordertrac_pushed_at') or '—'}"
+                )
+                if quote.get("ordertrac_url"):
+                    st.markdown(
+                        f"[Open this quote in OrderTrac]({quote['ordertrac_url']})"
+                    )
+
+            # ---- Customer / header ----
+            st.markdown(
+                f"##### FAF {quote.get('quote_number')} · `{quote.get('status')}` "
+                f"→ OrderTrac destination"
+            )
+            h1, h2 = st.columns(2)
+            with h1:
+                cust = st.text_input(
+                    "Customer name",
+                    value=quote.get("customer_name") or "",
+                    key=f"q_cust_{qid}",
+                )
+                phone = st.text_input(
+                    "Phone",
+                    value=quote.get("customer_phone") or "",
+                    key=f"q_phone_{qid}",
+                )
+                email = st.text_input(
+                    "Email",
+                    value=quote.get("customer_email") or "",
+                    key=f"q_email_{qid}",
+                )
+            with h2:
+                notes = st.text_area(
+                    "Notes",
+                    value=quote.get("notes") or "",
+                    height=100,
+                    key=f"q_notes_{qid}",
+                )
+                d1, d2 = st.columns(2)
+                with d1:
+                    disc = st.number_input(
+                        "Discount %",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=float(quote.get("discount_pct") or 0),
+                        step=1.0,
+                        key=f"q_disc_{qid}",
+                    )
+                with d2:
+                    tax = st.number_input(
+                        "Tax %",
+                        min_value=0.0,
+                        max_value=20.0,
+                        value=float(quote.get("tax_pct") or 0),
+                        step=0.25,
+                        key=f"q_tax_{qid}",
+                    )
+                wood_default = st.text_input(
+                    "Default wood (for notes)",
+                    value=st.session_state.get("quote_wood_default", "Red Oak"),
+                    key=f"q_wood_{qid}",
+                )
+                stain_default = st.text_input(
+                    "Default stain (for notes)",
+                    value=st.session_state.get(
+                        "quote_stain_default", "Michael's Cherry (OCS-113)"
+                    ),
+                    key=f"q_stain_{qid}",
+                )
+                st.session_state["quote_wood_default"] = wood_default
+                st.session_state["quote_stain_default"] = stain_default
+
+            if st.button("Save customer / rates", key=f"q_save_hdr_{qid}"):
+                # Merge wood/stain into notes if not already present
+                note_out = (notes or "").strip()
+                spec_line = (
+                    f"Wood: {wood_default.strip()} · Stain: {stain_default.strip()}"
+                )
+                if wood_default.strip() and "Wood:" not in note_out:
+                    note_out = (note_out + "\n" + spec_line).strip()
+                svc.update_quote(
+                    int(qid),
+                    customer_name=cust.strip(),
+                    customer_phone=phone.strip(),
+                    customer_email=email.strip(),
+                    notes=note_out,
+                    discount_pct=float(disc),
+                    tax_pct=float(tax),
+                )
+                st.success("Quote header saved.")
+                st.rerun()
+
+            # ---- Lines ----
+            lines = svc.quote_lines(int(qid))
+            totals = svc.quote_totals(int(qid))
+            tcols = st.columns(4)
+            tcols[0].metric("Lines", totals.get("line_count", 0))
+            tcols[1].metric("Subtotal", f"${totals.get('subtotal', 0):,.2f}")
+            tcols[2].metric("Tax", f"${totals.get('tax_amount', 0):,.2f}")
+            tcols[3].metric("**TOTAL**", f"${totals.get('grand_total', 0):,.2f}")
+
+            if lines is None or lines.empty:
+                st.info(
+                    "No FAF lines yet. Go to **Search**, pick a price, then "
+                    "**Add from FAF → quote**."
+                )
+            else:
+                show = lines.copy()
+                # Friendly columns
+                keep = [
+                    c
+                    for c in [
+                        "id",
+                        "line_no",
+                        "qty",
+                        "part_number",
+                        "description",
+                        "vendor",
+                        "species",
+                        "finish_state",
+                        "unit_base",
+                        "unit_retail",
+                        "line_discount_pct",
+                        "line_total",
+                        "notes",
+                        "pricebook_id",
+                    ]
+                    if c in show.columns
+                ]
+                show = show[keep].rename(
+                    columns={
+                        "line_no": "#",
+                        "part_number": "Part #",
+                        "description": "Description",
+                        "vendor": "Builder",
+                        "species": "Wood",
+                        "finish_state": "Finish",
+                        "unit_base": "Wholesale",
+                        "unit_retail": "Retail each",
+                        "line_discount_pct": "Disc %",
+                        "line_total": "Line total",
+                        "pricebook_id": "FAF id",
+                    }
+                )
+                st.dataframe(
+                    show.drop(columns=["id"], errors="ignore"),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(420, 80 + 36 * len(show)),
+                )
+
+                # Edit one line
+                with st.expander("Edit or remove a line"):
+                    line_ids = lines["id"].tolist()
+                    labels_l = []
+                    for _, r in lines.iterrows():
+                        labels_l.append(
+                            f"id {int(r['id'])} · {r.get('part_number') or ''} · "
+                            f"qty {r.get('qty')} · ${float(r.get('line_total') or 0):,.2f}"
+                        )
+                    lab_to_id = dict(zip(labels_l, line_ids))
+                    elab = st.selectbox("Line", labels_l, key=f"q_edit_line_{qid}")
+                    erow = lines[lines["id"] == lab_to_id[elab]].iloc[0]
+                    e1, e2, e3 = st.columns(3)
+                    with e1:
+                        eqty = st.number_input(
+                            "Qty",
+                            min_value=0.0,
+                            value=float(erow.get("qty") or 1),
+                            step=1.0,
+                            key=f"q_eqty_{qid}",
+                        )
+                    with e2:
+                        eretail = st.number_input(
+                            "Retail each",
+                            min_value=0.0,
+                            value=float(erow.get("unit_retail") or 0),
+                            step=1.0,
+                            key=f"q_eretail_{qid}",
+                        )
+                    with e3:
+                        edisc = st.number_input(
+                            "Line disc %",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=float(erow.get("line_discount_pct") or 0),
+                            step=1.0,
+                            key=f"q_edisc_{qid}",
+                        )
+                    b1, b2 = st.columns(2)
+                    with b1:
+                        if st.button("Update line", key=f"q_upd_line_{qid}"):
+                            svc.update_quote_line(
+                                int(lab_to_id[elab]),
+                                qty=float(eqty),
+                                unit_retail=float(eretail),
+                                line_discount_pct=float(edisc),
+                            )
+                            st.success("Line updated.")
+                            st.rerun()
+                    with b2:
+                        if st.button("Remove line", key=f"q_del_line_{qid}"):
+                            svc.delete_quote_line(int(lab_to_id[elab]))
+                            st.warning("Line removed.")
+                            st.rerun()
+
+                # Custom line
+                with st.expander("Add custom line (not in catalog)"):
+                    cdesc = st.text_input("Description", key=f"q_cdesc_{qid}")
+                    c2, c3, c4 = st.columns(3)
+                    with c2:
+                        cqty = st.number_input(
+                            "Qty", min_value=0.5, value=1.0, key=f"q_cqty_{qid}"
+                        )
+                    with c3:
+                        cprice = st.number_input(
+                            "Retail each", min_value=0.0, value=0.0, key=f"q_cprice_{qid}"
+                        )
+                    with c4:
+                        cvend = st.text_input("Builder", key=f"q_cvend_{qid}")
+                    if st.button("Add custom line", key=f"q_add_custom_{qid}"):
+                        if not cdesc.strip():
+                            st.error("Description required.")
+                        else:
+                            svc.add_custom_quote_line(
+                                int(qid),
+                                description=cdesc.strip(),
+                                qty=float(cqty),
+                                unit_retail=float(cprice),
+                                vendor=cvend.strip(),
+                            )
+                            st.success("Custom line added.")
+                            st.rerun()
+
+            # ---- Primary: Create in OrderTrac ----
+            st.markdown("##### Create in OrderTrac")
+            st.caption(
+                "This is the main action: FAF prices → new OrderTrac **Quote** "
+                "(not a sale). Requires OrderTrac session "
+                "(`python scripts/ordertrac_login.py` if expired)."
+            )
+            # Salesperson for OT SO User field
+            ot_user_opts = ["Miller, Judson"]
+            try:
+                udf = svc.list_app_users(active_only=True)
+                if (
+                    udf is not None
+                    and not udf.empty
+                    and "ordertrac_display_name" in udf.columns
+                ):
+                    names = [
+                        x
+                        for x in udf["ordertrac_display_name"].dropna().tolist()
+                        if str(x).strip()
+                    ]
+                    if names:
+                        ot_user_opts = names
+            except Exception:
+                pass
+            sess = st.session_state.get("auth_session") or {}
+            default_ot = sess.get("ordertrac_display_name") or ot_user_opts[0]
+            if default_ot not in ot_user_opts:
+                ot_user_opts = [default_ot] + ot_user_opts
+            ot_ix = (
+                ot_user_opts.index(default_ot) if default_ot in ot_user_opts else 0
+            )
+
+            otu1, otu2 = st.columns([2, 1])
+            with otu1:
+                ot_user = st.selectbox(
+                    "OrderTrac sales user (on the quote)",
+                    ot_user_opts,
+                    index=ot_ix,
+                    key=f"q_ot_user_{qid}",
+                )
+            with otu2:
+                ot_loc = st.selectbox(
+                    "Location",
+                    ["Landrum", "Foothills Cabinets"],
+                    key=f"q_ot_loc_{qid}",
+                )
+
+            has_lines = lines is not None and not lines.empty
+            linked = bool(quote.get("ordertrac_guid") or quote.get("ordertrac_so_id"))
+
+            def _save_header_and_push(mode: str):
+                svc.update_quote(
+                    int(qid),
+                    customer_name=cust.strip(),
+                    customer_phone=phone.strip(),
+                    customer_email=email.strip(),
+                    notes=notes,
+                    discount_pct=float(disc),
+                    tax_pct=float(tax),
+                )
+                return svc.push_quote_to_ordertrac(
+                    int(qid),
+                    ot_user_display=ot_user,
+                    location=ot_loc,
+                    mode=mode,
+                )
+
+            b_create, b_append = st.columns(2)
+            with b_create:
+                if st.button(
+                    "Create OrderTrac quote from FAF",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not has_lines,
+                    key=f"q_create_ot_{qid}",
+                    help="New OrderTrac QUOTE with all FAF cart lines",
+                ):
+                    with st.spinner(
+                        "Creating OrderTrac QUOTE from FAF pricelist lines…"
+                    ):
+                        try:
+                            result = _save_header_and_push("create")
+                            if result.get("ok"):
+                                st.success(
+                                    f"OrderTrac **QUOTE #{result.get('sales_order_id')}** "
+                                    f"created from FAF **{quote.get('quote_number')}** "
+                                    f"({result.get('lines_added', '?')} lines)."
+                                )
+                                if result.get("url"):
+                                    st.markdown(
+                                        f"[Open OrderTrac quote]({result['url']})"
+                                    )
+                                st.rerun()
+                            else:
+                                st.error(
+                                    result.get("error")
+                                    or "Create incomplete — check session / lines"
+                                )
+                                st.json(result)
+                        except Exception as e:
+                            st.error(str(e))
+            with b_append:
+                if st.button(
+                    "Add FAF lines → linked OrderTrac quote",
+                    use_container_width=True,
+                    disabled=not (has_lines and linked),
+                    key=f"q_append_ot_{qid}",
+                    help="Open the linked OrderTrac quote and add any new FAF lines not already there",
+                ):
+                    with st.spinner(
+                        "Adding new FAF lines onto linked OrderTrac quote…"
+                    ):
+                        try:
+                            result = _save_header_and_push("append")
+                            if result.get("ok"):
+                                st.success(
+                                    f"OrderTrac **QUOTE #{result.get('sales_order_id')}** updated · "
+                                    f"added {result.get('lines_added', 0)}, "
+                                    f"already present {result.get('lines_skipped', 0)}."
+                                )
+                                if result.get("url"):
+                                    st.markdown(
+                                        f"[Open OrderTrac quote]({result['url']})"
+                                    )
+                                st.rerun()
+                            else:
+                                st.error(
+                                    result.get("error")
+                                    or "Add incomplete — check session / link"
+                                )
+                                st.json(result)
+                        except Exception as e:
+                            st.error(str(e))
+
+            if not has_lines:
+                st.warning(
+                    "Add FAF catalog lines from **Search → Add from FAF → quote** first."
+                )
+            elif not linked:
+                st.caption(
+                    "After the first create, you can add more items from Search and use "
+                    "**Add FAF lines → linked OrderTrac quote**."
+                )
+
+            # ---- Secondary: Export / delete ----
+            st.markdown("##### Local export")
+            x1, x2, x3 = st.columns(3)
+            with x1:
+                try:
+                    pdf_bytes = svc.export_quote_pdf(int(qid))
+                    st.download_button(
+                        "Download PDF",
+                        data=pdf_bytes,
+                        file_name=f"{quote.get('quote_number') or 'quote'}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
+                except Exception as e:
+                    st.caption(f"PDF: {e}")
+            with x2:
+                try:
+                    xls_bytes = svc.export_quote_excel(int(qid))
+                    st.download_button(
+                        "Download Excel",
+                        data=xls_bytes,
+                        file_name=f"{quote.get('quote_number') or 'quote'}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                except Exception as e:
+                    st.caption(f"Excel: {e}")
+            with x3:
+                if st.button(
+                    "Delete FAF quote",
+                    use_container_width=True,
+                ):
+                    svc.delete_quote(int(qid))
+                    st.session_state.pop("active_quote_id", None)
+                    st.warning("FAF quote deleted (OrderTrac copy unchanged).")
+                    st.rerun()
+
+            # Status
+            s1, s2 = st.columns(2)
+            with s1:
+                new_status = st.selectbox(
+                    "Status",
+                    ["draft", "sent", "won", "lost", "archived"],
+                    index=["draft", "sent", "won", "lost", "archived"].index(
+                        quote.get("status")
+                        if quote.get("status")
+                        in ("draft", "sent", "won", "lost", "archived")
+                        else "draft"
+                    ),
+                    key=f"q_status_{qid}",
+                )
+            with s2:
+                st.write("")
+                st.write("")
+                if st.button("Update status", key=f"q_status_btn_{qid}"):
+                    svc.update_quote(int(qid), status=new_status)
+                    st.success(f"Status → {new_status}")
                     st.rerun()
 
 # ---------------------------------------------------------------------------
@@ -1196,6 +1872,240 @@ with tab_admin:
     st.caption(f"Database: `{svc.path}`")
     st.caption(f"Last backup: {_last_backup_hint()}")
     st.caption(f"Viztech sync: {_viztech_sync_hint()}")
+
+    # ----- OrderTrac connection + user sync (admins) -----
+    st.divider()
+    st.markdown("### OrderTrac connection")
+    st.caption(
+        "Link the company OrderTrac account so FAF can create staff logins from "
+        "OrderTrac sales users and push quotes. Credentials live in "
+        "`.streamlit/secrets.toml` → `[ordertrac]` (never in git)."
+    )
+    _is_admin = (st.session_state.get("auth_role") or "") == "admin"
+    if not _is_admin:
+        st.info("Only **admin** users can manage OrderTrac connection and FAF accounts.")
+    else:
+        # Always use live service (clears stale cache if methods missing)
+        _ot_svc = _svc()
+        ot = _ot_svc.ordertrac_connection_status()
+        oc1, oc2, oc3 = st.columns(3)
+        oc1.metric("Secrets configured", "Yes" if ot.get("configured") else "No")
+        oc2.metric("Session file", "Yes" if ot.get("session_exists") else "No")
+        oc3.metric("FAF users", ot.get("faf_user_count") or 0)
+        st.caption(
+            f"OrderTrac user: `{ot.get('username') or '—'}` · "
+            f"{ot.get('base_url')} · session `{ot.get('session_file')}`"
+        )
+        integ = ot.get("integration") or {}
+        if integ.get("status"):
+            st.caption(
+                f"Last integration status: **{integ.get('status')}** · "
+                f"ok at {integ.get('last_ok_at') or '—'} · "
+                f"{integ.get('last_error') or ''}"
+            )
+
+        otb1, otb2, otb3 = st.columns(3)
+        with otb1:
+            if st.button("Check OrderTrac session", use_container_width=True):
+                with st.spinner("Checking OrderTrac…"):
+                    chk = _ot_svc.ordertrac_check_session()
+                if chk.get("ok"):
+                    st.success("OrderTrac session is alive.")
+                else:
+                    st.error(chk.get("error") or "Session dead")
+                    st.info("Re-login: `python scripts/ordertrac_login.py`")
+        with otb2:
+            if st.button(
+                "Sync users from OrderTrac",
+                type="primary",
+                use_container_width=True,
+                help="Creates FAF logins for each OrderTrac sales user (UserGUID list)",
+            ):
+                with st.spinner("Fetching OrderTrac users and creating FAF accounts…"):
+                    sync_result = _ot_svc.sync_users_from_ordertrac(default_role="sales")
+                if sync_result.get("ok"):
+                    st.success(
+                        f"Synced · OT users: {sync_result.get('ot_count')} · "
+                        f"created: {len(sync_result.get('created') or [])} · "
+                        f"updated: {len(sync_result.get('updated') or [])}"
+                    )
+                    if sync_result.get("created"):
+                        st.warning(
+                            "New accounts — share temp passwords once, then users change them:"
+                        )
+                        for c in sync_result["created"]:
+                            st.code(
+                                f"{c['username']}  /  {c.get('temp_password', '')}",
+                                language=None,
+                            )
+                    if sync_result.get("skipped"):
+                        st.caption(
+                            "Skipped: " + ", ".join(sync_result["skipped"][:12])
+                        )
+                else:
+                    st.error(sync_result.get("error") or "Sync failed")
+                    st.info("Need live session: `python scripts/ordertrac_login.py`")
+        with otb3:
+            st.caption(
+                "CLI: `python scripts/ordertrac_sync_users.py` · "
+                "`python scripts/ordertrac_sync_users.py --check`"
+            )
+
+        st.markdown("##### FAF users")
+        try:
+            users_df = _ot_svc.list_app_users()
+        except Exception as e:
+            users_df = pd.DataFrame()
+            st.error(f"Could not load users: {e}")
+        if users_df is not None and not users_df.empty:
+            show_cols = [
+                c
+                for c in (
+                    "username",
+                    "display_name",
+                    "role",
+                    "active",
+                    "source",
+                    "ordertrac_display_name",
+                    "must_change_password",
+                    "last_login_at",
+                )
+                if c in users_df.columns
+            ]
+            st.dataframe(
+                users_df[show_cols], use_container_width=True, hide_index=True
+            )
+        else:
+            st.info(
+                "No users yet — seed admin is created on first login, or run OrderTrac sync."
+            )
+
+        with st.expander("Create / reset a user"):
+            cu1, cu2 = st.columns(2)
+            with cu1:
+                nu = st.text_input("Username", key="new_user_name")
+                nd = st.text_input("Display name", key="new_user_disp")
+                nr = st.selectbox(
+                    "Role", ["sales", "floor", "admin"], key="new_user_role"
+                )
+            with cu2:
+                npw = st.text_input("Password", type="password", key="new_user_pw")
+                if st.button("Create user", key="btn_create_user"):
+                    if not nu or not npw:
+                        st.error("Username and password required.")
+                    else:
+                        try:
+                            uid = _ot_svc.create_app_user(
+                                username=nu.strip(),
+                                password=npw,
+                                display_name=nd.strip() or nu.strip(),
+                                role=nr,
+                                source="local",
+                                must_change_password=False,
+                            )
+                            st.success(f"Created user id={uid} ({nu})")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+            st.markdown("**Reset password**")
+            if users_df is not None and not users_df.empty:
+                unames = users_df["username"].tolist()
+                ru = st.selectbox("User", unames, key="reset_user_sel")
+                rpw = st.text_input(
+                    "New password", type="password", key="reset_user_pw"
+                )
+                if st.button("Reset password", key="btn_reset_pw"):
+                    row = users_df[users_df["username"] == ru].iloc[0]
+                    _ot_svc.set_app_user_password(
+                        int(row["id"]), rpw, must_change=True
+                    )
+                    st.success(
+                        f"Password reset for {ru} (must change on next login)."
+                    )
+
+        st.markdown("##### Push FAF lines → OrderTrac QUOTE")
+        st.caption(
+            "Creates a new **Quote** in OrderTrac (not a sale) with custom lines "
+            "from FAF pricebook IDs. Vendor map: `config/ordertrac_vendor_map.json`."
+        )
+        push_ids = st.text_input(
+            "FAF pricebook IDs (comma-separated)",
+            value="479060,479078,482875,482881",
+            key="ot_push_ids",
+            help="Example Barkman dining set IDs from FAF master",
+        )
+        pq1, pq2, pq3 = st.columns(3)
+        with pq1:
+            push_qtys = st.text_input("Qtys (optional)", value="1,2,4,2", key="ot_push_qtys")
+        with pq2:
+            push_wood = st.text_input("Wood", value="Red Oak", key="ot_push_wood")
+        with pq3:
+            push_stain = st.text_input(
+                "Stain", value="Michael's Cherry (OCS-113)", key="ot_push_stain"
+            )
+        ot_user_opts = []
+        try:
+            udf = _ot_svc.list_app_users(active_only=True)
+            if not udf.empty and "ordertrac_display_name" in udf.columns:
+                ot_user_opts = [
+                    x
+                    for x in udf["ordertrac_display_name"].dropna().tolist()
+                    if str(x).strip()
+                ]
+        except Exception:
+            pass
+        if not ot_user_opts:
+            ot_user_opts = ["Miller, Judson"]
+        push_user = st.selectbox(
+            "OrderTrac sales user",
+            options=ot_user_opts,
+            index=0,
+            key="ot_push_user",
+        )
+        if st.button("Push to OrderTrac as QUOTE", type="primary", key="btn_ot_push"):
+            try:
+                ids = [int(x.strip()) for x in push_ids.split(",") if x.strip()]
+                qtys = (
+                    [float(x.strip()) for x in push_qtys.split(",") if x.strip()]
+                    if push_qtys.strip()
+                    else None
+                )
+                rows = []
+                for i in ids:
+                    r = _ot_svc.get_row(i)
+                    if not r:
+                        st.error(f"Missing FAF id {i}")
+                        rows = []
+                        break
+                    rows.append(r)
+                if rows:
+                    with st.spinner("Pushing quote to OrderTrac (browser automation)…"):
+                        result = _ot_svc.push_rows_to_ordertrac(
+                            rows,
+                            qtys=qtys,
+                            wood=push_wood.strip(),
+                            stain=push_stain.strip(),
+                            ot_user_display=push_user,
+                            location="Landrum",
+                            project=f"FAF push {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                            customer_name="FAF Floor Quote",
+                        )
+                    if result.get("ok"):
+                        st.success(
+                            f"OrderTrac QUOTE {result.get('sales_order_id')} created."
+                        )
+                        if result.get("url"):
+                            st.markdown(f"[Open in OrderTrac]({result['url']})")
+                    else:
+                        st.error(result.get("error") or "Push incomplete")
+                        st.json(result)
+            except Exception as e:
+                st.error(str(e))
+
+        handoff = Path.home() / "Documents" / "ordertrac-session" / "faf-login-handoff.txt"
+        if handoff.is_file():
+            st.caption(f"Staff login handoff file: `{handoff}`")
+
 
     st.markdown("##### Viztech monthly update")
     st.caption(
