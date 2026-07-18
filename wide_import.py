@@ -2571,6 +2571,458 @@ def import_hw_chair_workbook(
     )
 
 
+# ---------------------------------------------------------------------------
+# Thin-catalog specialists: Amish Aspen flyer, Hillside Chair Unf/Fin matrix,
+# Maple Lane pet (SKU row + price on next row under species)
+# ---------------------------------------------------------------------------
+
+def looks_like_amish_aspen(filename: str = "") -> bool:
+    fn = (filename or "").lower().replace("_", " ")
+    return "amish aspen" in fn or "aspen and rustic" in fn
+
+
+def import_amish_aspen_workbook(
+    data: bytes,
+    *,
+    vendor: str = "",
+    default_collection: str = "",
+    sheet_filter: Optional[list[str]] = None,
+    filename: str = "",
+) -> WorkbookImportResult:
+    """3-column flyer: name | price | dims blocks across the sheet."""
+    names = list_excel_sheets(data)
+    vendor_name = vendor or "Amish Aspen and Rustic"
+    frames: list[pd.DataFrame] = []
+    tried: list[dict] = []
+    targets = sheet_filter if sheet_filter is not None else names
+
+    # name-col, price-col pairs observed in sheet (0-indexed)
+    pairs = [(0, 3), (5, 7), (9, 10), (1, 2), (1, 4), (6, 9), (7, 9)]
+
+    for name in names:
+        if name not in targets:
+            continue
+        try:
+            bio = io.BytesIO(data)
+            raw = pd.read_excel(bio, sheet_name=name, header=None)
+        except Exception as e:
+            tried.append({"sheet": name, "layout": "error", "rows": 0, "note": str(e)})
+            continue
+        raw = raw.dropna(how="all").reset_index(drop=True)
+        if raw.empty:
+            tried.append({"sheet": name, "layout": "empty", "rows": 0, "note": ""})
+            continue
+        rows = []
+        current_collection: Optional[str] = default_collection or None
+        seen: set[tuple] = set()
+        for i in range(len(raw)):
+            for name_c, price_c in pairs:
+                if name_c >= raw.shape[1] or price_c >= raw.shape[1]:
+                    continue
+                nm = _norm(raw.iat[i, name_c])
+                price = _to_float(raw.iat[i, price_c])
+                if not nm or price is None or price < 20:
+                    # section banners
+                    if nm and price is None and 3 <= len(nm) <= 50:
+                        if re.search(
+                            r"(?i)bedroom|table|bed|dining|book|living|white cedar",
+                            nm,
+                        ):
+                            current_collection = nm
+                    continue
+                if re.search(
+                    r"(?i)phone|fax|email|@|subject to|price list|joel martin|"
+                    r"hillsboro|walnut tops|d\s*w\s*h|table only|add a sceen",
+                    nm,
+                ):
+                    continue
+                if re.fullmatch(r"\d+(\.\d+)?\s*[x×]\s*\d+", nm, re.I):
+                    continue
+                if len(nm) > 70:
+                    continue
+                key = (nm.lower(), round(price, 2))
+                if key in seen:
+                    continue
+                seen.add(key)
+                # optional dims: col after price
+                dims = None
+                for dc in (price_c + 1, name_c + 1, 4, 8, 11):
+                    if dc < raw.shape[1] and dc != price_c and dc != name_c:
+                        d = _norm(raw.iat[i, dc])
+                        if d and re.search(r"\d", d) and re.search(r"[x×]", d, re.I):
+                            dims = d
+                            break
+                rows.append({
+                    "vendor": vendor_name,
+                    "collection": current_collection,
+                    "part_number": nm,
+                    "description": nm,
+                    "dimensions": dims,
+                    "option_key": None,
+                    "species": None,
+                    "species_tier": None,
+                    "finish_state": "finished",
+                    "base_price": price,
+                    "price_basis": "wholesale",
+                    "unit": None,
+                    "notes": None,
+                })
+        long = _clean_long_rows(pd.DataFrame(rows)) if rows else pd.DataFrame()
+        tried.append({
+            "sheet": name, "layout": "amish_aspen_flyer",
+            "rows": len(long), "note": f"pairs={len(pairs)}",
+        })
+        if not long.empty:
+            frames.append(long)
+
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if vendor_name and not out.empty:
+        out["vendor"] = vendor_name
+    return WorkbookImportResult(
+        sheets_tried=tried,
+        long_df=out if not out.empty else pd.DataFrame(columns=[
+            "vendor", "collection", "part_number", "description", "dimensions",
+            "option_key", "species", "species_tier", "finish_state", "base_price",
+            "price_basis", "unit", "notes",
+        ]),
+        detected_markup=None,
+        sheet_names=names,
+        notes=f"{filename + ': ' if filename else ''}Amish Aspen flyer · {len(out) if not out.empty else 0} rows",
+    )
+
+
+def looks_like_hillside_chair(filename: str = "", sheet_names: Optional[list[str]] = None) -> bool:
+    fn = (filename or "").lower().replace("_", " ")
+    if "hillside chair" in fn or "hillside_chair" in (filename or "").lower():
+        return True
+    names = sheet_names or []
+    return bool(names) and names[0].lower() == "master" and any(
+        re.fullmatch(r"(?i)sheet\d+", str(n)) for n in names
+    ) and len(names) >= 8
+
+
+def import_hillside_chair_workbook(
+    data: bytes,
+    *,
+    vendor: str = "",
+    default_collection: str = "",
+    sheet_filter: Optional[list[str]] = None,
+    filename: str = "",
+) -> WorkbookImportResult:
+    """Hillside: multi-section Unf/Fin under Oak/Brown Maple/Cherry/Elm/Walnut."""
+    names = list_excel_sheets(data)
+    vendor_name = vendor or "Hillside Chair"
+    frames: list[pd.DataFrame] = []
+    tried: list[dict] = []
+    # Product sheets only (skip Master index, finishing adders Sheet2)
+    product_sheets = [
+        n for n in names
+        if re.fullmatch(r"(?i)sheet\s*\d+", str(n).replace(" ", ""))
+        or re.fullmatch(r"(?i)sheet\d+", str(n))
+    ]
+    # Sheet1=index, Sheet2=finish adders — start product pages at Sheet3
+    product_sheets = [
+        n for n in names
+        if re.match(r"(?i)^sheet\s*\d+$", str(n).strip())
+        and int(re.search(r"\d+", str(n)).group()) >= 3
+    ]
+    if sheet_filter is not None:
+        product_sheets = [n for n in product_sheets if n in sheet_filter]
+
+    for name in names:
+        if name not in product_sheets:
+            if sheet_filter is None or name not in (sheet_filter or []):
+                tried.append({"sheet": name, "layout": "skip", "rows": 0, "note": "index/adders"})
+            continue
+        try:
+            bio = io.BytesIO(data)
+            raw = pd.read_excel(bio, sheet_name=name, header=None)
+        except Exception as e:
+            tried.append({"sheet": name, "layout": "error", "rows": 0, "note": str(e)})
+            continue
+        raw = raw.dropna(how="all").reset_index(drop=True)
+        rows = []
+        current_style = default_collection or None
+        # species groups: col pairs starting at 2: (unf, fin) per species block
+        species_labels: list[str] = []
+        col_map: list[tuple[int, str, str]] = []  # col, species, finish
+
+        for i in range(len(raw)):
+            c0 = _norm(raw.iat[i, 0]) if raw.shape[1] else ""
+            c1 = _norm(raw.iat[i, 1]) if raw.shape[1] > 1 else ""
+            # Style header row: "Small Avon: AC364 Side | ..."
+            if c0 and re.search(r"(?i)side\s*chair|arm\s*chair|:.*AC\d|:\s*AC", c0 + " " + c1):
+                # may be style on col0 with species on same row
+                style_m = re.match(r"^([^:]+):", c0)
+                if style_m:
+                    current_style = style_m.group(1).strip()
+                elif ":" in c0:
+                    current_style = c0.split(":")[0].strip()
+                # rebuild species map from this row
+                species_labels = []
+                for j in range(2, raw.shape[1]):
+                    lab = _norm(raw.iat[i, j])
+                    if lab and looks_like_species_header(lab):
+                        # collapse multi-wood cell to first wood token group
+                        species_labels.append((j, lab.split()[0] if lab else lab))
+                continue
+            # Unf/Fin header row
+            cells = [_norm(raw.iat[i, j]) if j < raw.shape[1] else "" for j in range(raw.shape[1])]
+            unf_hits = sum(1 for c in cells if re.fullmatch(r"(?i)unf\.?", c))
+            fin_hits = sum(1 for c in cells if re.fullmatch(r"(?i)fin\.?", c))
+            if unf_hits >= 2 and fin_hits >= 2:
+                col_map = []
+                # walk columns; carry species from previous non-empty top
+                # species names sit on prior row — re-read previous
+                if i > 0:
+                    tops = [_norm(raw.iat[i - 1, j]) if j < raw.shape[1] else "" for j in range(raw.shape[1])]
+                else:
+                    tops = [""] * raw.shape[1]
+                carry = ""
+                for j in range(2, raw.shape[1]):
+                    top = tops[j] if j < len(tops) else ""
+                    bot = cells[j]
+                    if top and looks_like_species_header(top):
+                        # first word of multi-wood banner
+                        carry = re.split(r"\s{2,}|\s+(?=Rustic|QSWO)", top)[0].strip()
+                        # better: take known woods
+                        m = re.search(
+                            r"(?i)(brown\s*maple|red\s*oak|white\s*oak|rustic\s*wo|"
+                            r"oak|maple|cherry|hickory|elm|qswo|walnut)",
+                            top,
+                        )
+                        if m:
+                            carry = m.group(1).title().replace("Qswo", "QSWO")
+                    if re.fullmatch(r"(?i)unf\.?", bot) and carry:
+                        col_map.append((j, carry, "unfinished"))
+                    elif re.fullmatch(r"(?i)fin\.?", bot) and carry:
+                        col_map.append((j, carry, "finished"))
+                continue
+
+            # Product row: desc in col1, optional suffix in col0
+            desc = c1 or c0
+            if not desc or not col_map:
+                continue
+            if re.search(r"(?i)profile comfort|fabric seat|add \$|hardwood xx", desc):
+                continue
+            suffix = c0 if c0.startswith("-") or re.match(r"^-", c0.replace("\xa0", "").strip()) else ""
+            suffix = re.sub(r"[\xa0\s]+", "", suffix)
+            part = f"{current_style or ''} {desc} {suffix}".strip()
+            part = re.sub(r"\s+", " ", part)
+            any_p = False
+            for j, sp, fin in col_map:
+                if j >= raw.shape[1]:
+                    continue
+                price = _to_float(raw.iat[i, j])
+                if price is None or price < 20:
+                    continue
+                any_p = True
+                rows.append({
+                    "vendor": vendor_name,
+                    "collection": current_style,
+                    "part_number": part,
+                    "description": part,
+                    "dimensions": None,
+                    "option_key": suffix or None,
+                    "species": sp,
+                    "species_tier": None,
+                    "finish_state": fin,
+                    "base_price": price,
+                    "price_basis": "wholesale",
+                    "unit": None,
+                    "notes": None,
+                })
+            if not any_p and c0 and not c1 and len(c0) < 60:
+                # bare style line without colon
+                if not re.search(r"(?i)add |seat", c0):
+                    current_style = c0
+
+        long = _clean_long_rows(pd.DataFrame(rows)) if rows else pd.DataFrame()
+        tried.append({
+            "sheet": name, "layout": "hillside_unf_fin",
+            "rows": len(long), "note": f"style={current_style}",
+        })
+        if not long.empty:
+            frames.append(long)
+
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if vendor_name and not out.empty:
+        out["vendor"] = vendor_name
+    return WorkbookImportResult(
+        sheets_tried=tried,
+        long_df=out if not out.empty else pd.DataFrame(columns=[
+            "vendor", "collection", "part_number", "description", "dimensions",
+            "option_key", "species", "species_tier", "finish_state", "base_price",
+            "price_basis", "unit", "notes",
+        ]),
+        detected_markup=None,
+        sheet_names=names,
+        notes=f"{filename + ': ' if filename else ''}Hillside Chair Unf/Fin · {len(out) if not out.empty else 0} rows",
+    )
+
+
+def looks_like_maple_lane(filename: str = "") -> bool:
+    fn = (filename or "").lower().replace("_", " ")
+    return "maple lane" in fn or "maple_lane" in (filename or "").lower()
+
+
+def import_maple_lane_workbook(
+    data: bytes,
+    *,
+    vendor: str = "",
+    default_collection: str = "",
+    sheet_filter: Optional[list[str]] = None,
+    filename: str = "",
+) -> WorkbookImportResult:
+    """Maple Lane: CODE + desc on row N, prices on N+1 under species columns."""
+    names = list_excel_sheets(data)
+    vendor_name = vendor or "Maple Lane Woodshop"
+    # Prefer wholesale
+    prefer = [n for n in names if re.search(r"(?i)wholesale", str(n))]
+    targets = sheet_filter if sheet_filter is not None else (prefer or names)
+    frames: list[pd.DataFrame] = []
+    tried: list[dict] = []
+
+    for name in names:
+        if name not in targets:
+            if sheet_filter is None and re.search(r"(?i)retail", str(name)) and prefer:
+                tried.append({"sheet": name, "layout": "skip", "rows": 0, "note": "retail"})
+            continue
+        try:
+            bio = io.BytesIO(data)
+            raw = pd.read_excel(bio, sheet_name=name, header=None)
+        except Exception as e:
+            tried.append({"sheet": name, "layout": "error", "rows": 0, "note": str(e)})
+            continue
+        raw = raw.dropna(how="all").reset_index(drop=True)
+        rows = []
+        current_collection = default_collection or None
+        species_cols: list[tuple[int, str]] = []  # col, species
+        finish_row_mode = False
+
+        for i in range(len(raw)):
+            c0 = _norm(raw.iat[i, 0]) if raw.shape[1] else ""
+            # Collection banner
+            row_vals = [_norm(raw.iat[i, j]) if j < raw.shape[1] else "" for j in range(min(raw.shape[1], 8))]
+            joined = " ".join(v for v in row_vals if v)
+            if joined and not c0 and re.search(
+                r"(?i)pet diner|dining station|cabinet|end table|coffee|ramp|gate|toy box|lormel",
+                joined,
+            ):
+                current_collection = joined[:60]
+            # Species header: CODE ... RED OAK | BR. MAPLE | ...
+            if re.fullmatch(r"(?i)code", c0) or (
+                any(looks_like_species_header(v) for v in row_vals[3:10])
+                and sum(1 for v in row_vals if looks_like_species_header(v)) >= 2
+            ):
+                species_cols = []
+                for j in range(raw.shape[1]):
+                    lab = _norm(raw.iat[i, j])
+                    if lab and looks_like_species_header(lab):
+                        species_cols.append((j, lab))
+                finish_row_mode = False
+                continue
+            # Unfinished/Finished subheader
+            if sum(1 for v in row_vals if re.fullmatch(r"(?i)unfinished|finished", v)) >= 2:
+                # remap: pair finish under previous species carry
+                new_map = []
+                carry = ""
+                # need previous species row - use current species_cols as anchors
+                for j in range(raw.shape[1]):
+                    lab = _norm(raw.iat[i, j])
+                    if j > 0 and species_cols:
+                        # find nearest species col <= j
+                        for sc, sn in reversed(species_cols):
+                            if sc <= j:
+                                carry = sn
+                                break
+                    if re.fullmatch(r"(?i)unfinished", lab) and carry:
+                        new_map.append((j, carry, "unfinished"))
+                    elif re.fullmatch(r"(?i)finished", lab) and carry:
+                        new_map.append((j, carry, "finished"))
+                if new_map:
+                    species_cols = [(j, f"{sp} | {fin}") for j, sp, fin in new_map]
+                    finish_row_mode = True
+                continue
+
+            # SKU row
+            if not c0 or not re.match(r"^[A-Z]{2,8}\d", c0, re.I):
+                continue
+            desc = _norm(raw.iat[i, 1]) if raw.shape[1] > 1 else c0
+            # prices often on next row
+            price_row = i
+            # if this row has no numeric prices, use i+1
+            has_here = any(
+                _to_float(raw.iat[i, j]) is not None
+                for j, _ in species_cols
+                if j < raw.shape[1]
+            )
+            if not has_here and i + 1 < len(raw):
+                price_row = i + 1
+                # also dims may be on next row col1
+                if not desc or len(desc) < 3:
+                    desc = _norm(raw.iat[i + 1, 1]) if raw.shape[1] > 1 else desc
+                d2 = _norm(raw.iat[i + 1, 1]) if raw.shape[1] > 1 else ""
+                dims = d2 if d2 and re.search(r"\d", d2) and re.search(r"[x×]", d2, re.I) else None
+            else:
+                dims = None
+                d2 = _norm(raw.iat[i, 1]) if raw.shape[1] > 1 else ""
+                if d2 and re.search(r"[x×]", d2, re.I):
+                    dims = d2
+
+            for tier_i, (j, sp) in enumerate(species_cols, start=1):
+                if j >= raw.shape[1]:
+                    continue
+                price = _to_float(raw.iat[price_row, j])
+                if price is None or price < 5:
+                    continue
+                finish = "unfinished"
+                species_name = sp
+                if " | " in sp:
+                    species_name, fin = sp.split(" | ", 1)
+                    finish = "finished" if "fin" in fin.lower() and "unf" not in fin.lower() else (
+                        "unfinished" if "unf" in fin.lower() else fin.lower()
+                    )
+                rows.append({
+                    "vendor": vendor_name,
+                    "collection": current_collection,
+                    "part_number": c0,
+                    "description": desc or c0,
+                    "dimensions": dims,
+                    "option_key": None,
+                    "species": species_name,
+                    "species_tier": tier_i,
+                    "finish_state": finish,
+                    "base_price": price,
+                    "price_basis": "wholesale",
+                    "unit": None,
+                    "notes": None,
+                })
+
+        long = _clean_long_rows(pd.DataFrame(rows)) if rows else pd.DataFrame()
+        tried.append({
+            "sheet": name, "layout": "maple_lane_sku_next_price",
+            "rows": len(long), "note": f"species_cols={len(species_cols)}",
+        })
+        if not long.empty:
+            frames.append(long)
+
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if vendor_name and not out.empty:
+        out["vendor"] = vendor_name
+    return WorkbookImportResult(
+        sheets_tried=tried,
+        long_df=out if not out.empty else pd.DataFrame(columns=[
+            "vendor", "collection", "part_number", "description", "dimensions",
+            "option_key", "species", "species_tier", "finish_state", "base_price",
+            "price_basis", "unit", "notes",
+        ]),
+        detected_markup=None,
+        sheet_names=names,
+        notes=f"{filename + ': ' if filename else ''}Maple Lane · {len(out) if not out.empty else 0} rows",
+    )
+
+
 def import_workbook(
     data: bytes,
     *,
@@ -2593,6 +3045,22 @@ def import_workbook(
             default_collection=default_collection,
             sheet_filter=sheet_filter,
             filename=filename,
+        )
+
+    if looks_like_amish_aspen(filename):
+        return import_amish_aspen_workbook(
+            data, vendor=vendor, default_collection=default_collection,
+            sheet_filter=sheet_filter, filename=filename,
+        )
+    if looks_like_hillside_chair(filename, names):
+        return import_hillside_chair_workbook(
+            data, vendor=vendor, default_collection=default_collection,
+            sheet_filter=sheet_filter, filename=filename,
+        )
+    if looks_like_maple_lane(filename):
+        return import_maple_lane_workbook(
+            data, vendor=vendor, default_collection=default_collection,
+            sheet_filter=sheet_filter, filename=filename,
         )
 
     if looks_like_hw_chair_markup(filename, names):
