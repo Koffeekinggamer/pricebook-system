@@ -24,7 +24,8 @@ Public quick-tunnel (changes when tunnel restarts): see
 Last known: `https://restoration-manual-antibody-premier.trycloudflare.com`
 
 **Live DB (gitignored):** `~/FAF-pricebook/master_pricebook.db`  
-**As of 2026-07-18 (import fixes):** ~**517,627 rows · 181 vendors · 3,603 collections · 153 phones**
+**As of 2026-07-18 (post-clean):** ~**387,380 rows · 181 vendors · 3,422 collections · 153 phones**  
+(Removed ~130k exact duplicate configs; retail mismatches fixed; VACUUM’d. Backup: `~/Documents/FAF-pricebook-backups/master_pricebook-20260718-133324.db`)
 
 ```bash
 .venv/bin/python -m backend.cli stats
