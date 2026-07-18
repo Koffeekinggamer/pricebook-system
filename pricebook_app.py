@@ -691,11 +691,15 @@ with tab_search:
                         "Qty", min_value=0.5, value=1.0, step=1.0, key="add_quote_qty"
                     )
                 with aq3:
+                    # Prefer quote defaults, then free type
+                    _def_stain = st.session_state.get(
+                        "quote_stain_default", "Michael's Cherry (OCS-113)"
+                    )
                     add_stain = st.text_input(
-                        "Stain (optional)",
-                        value=st.session_state.get("quote_stain_default", ""),
+                        "Stain",
+                        value=_def_stain,
                         key="add_quote_stain",
-                        placeholder="e.g. Michael's Cherry",
+                        placeholder="Stain name / OCS…",
                     )
                 with aq4:
                     st.write("")
@@ -709,22 +713,36 @@ with tab_search:
                         try:
                             qid = _ensure_active_quote()
                             rid = id_by_label[pick]
-                            wood_sel = None if wf == "All" else wf
-                            finish_sel = None if ff == "All" else ff
+                            # Prefer Search wood filter; else quote default wood
+                            wood_sel = (
+                                None
+                                if wf == "All"
+                                else wf
+                            ) or st.session_state.get("quote_wood_default")
+                            finish_sel = (
+                                None if ff == "All" else ff
+                            ) or st.session_state.get(
+                                "quote_finish_default", "finished"
+                            )
+                            stain_sel = (add_stain or "").strip() or st.session_state.get(
+                                "quote_stain_default", ""
+                            )
                             svc.add_quote_line_from_id(
                                 qid,
                                 rid,
                                 qty=float(add_qty),
                                 species_override=wood_sel,
                                 finish_override=finish_sel,
-                                stain=(add_stain or "").strip(),
+                                stain=stain_sel,
                             )
-                            st.session_state["quote_stain_default"] = (
-                                add_stain or ""
-                            ).strip()
+                            if stain_sel:
+                                st.session_state["quote_stain_default"] = stain_sel
+                            if wood_sel:
+                                st.session_state["quote_wood_default"] = wood_sel
                             qn = (svc.get_quote(qid) or {}).get("quote_number")
                             st.success(
-                                f"Added FAF #{rid} → **{qn}** · open **OrderTrac quote** tab when ready"
+                                f"Added FAF #{rid} → **{qn}** "
+                                f"({wood_sel or 'wood?'} / {stain_sel or 'stain?'})"
                             )
                             st.rerun()
                         except Exception as exc:
@@ -909,40 +927,224 @@ receives custom lines with FAF id, wood, stain, finish, and retail.
                         step=0.25,
                         key=f"q_tax_{qid}",
                     )
-                wood_default = st.text_input(
-                    "Default wood (for notes)",
-                    value=st.session_state.get("quote_wood_default", "Red Oak"),
-                    key=f"q_wood_{qid}",
+
+            # ---- Adjustable wood / stain (apply to quote + lines) ----
+            st.markdown("##### Wood & stain (adjustable)")
+            st.caption(
+                "Change these anytime. Use **Apply to all lines** so every cart line "
+                "and OrderTrac push use the same wood/stain."
+            )
+            # Common woods from catalog + free entry
+            try:
+                _woods = list(svc.list_species(vendor=None) or [])
+            except Exception:
+                _woods = []
+            _core_woods = [
+                "Red Oak",
+                "QSWO",
+                "White Oak",
+                "Brown Maple",
+                "Cherry",
+                "Hickory",
+                "Walnut",
+                "Soft Maple",
+                "Hard Maple",
+                "Rustic Cherry",
+                "Wormy Maple",
+            ]
+            wood_choices = []
+            for w in _core_woods + _woods:
+                if w and w not in wood_choices:
+                    wood_choices.append(w)
+            if "Other / type below…" not in wood_choices:
+                wood_choices.append("Other / type below…")
+
+            _common_stains = [
+                "Michael's Cherry (OCS-113)",
+                "Asbury (OCS-111)",
+                "Espresso (OCS-228)",
+                "Washington (OCS-109)",
+                "S-2 (OCS-104)",
+                "Natural",
+                "Clear",
+                "Custom / type below…",
+            ]
+
+            # Session defaults (do not pass value= with key= — breaks editing)
+            if "quote_wood_default" not in st.session_state:
+                st.session_state["quote_wood_default"] = "Red Oak"
+            if "quote_stain_default" not in st.session_state:
+                st.session_state["quote_stain_default"] = "Michael's Cherry (OCS-113)"
+
+            cur_wood = st.session_state["quote_wood_default"]
+            wood_ix = (
+                wood_choices.index(cur_wood)
+                if cur_wood in wood_choices
+                else len(wood_choices) - 1
+            )
+            cur_stain = st.session_state["quote_stain_default"]
+            stain_ix = (
+                _common_stains.index(cur_stain)
+                if cur_stain in _common_stains
+                else len(_common_stains) - 1
+            )
+
+            wcol1, wcol2 = st.columns(2)
+            with wcol1:
+                wood_pick = st.selectbox(
+                    "Wood",
+                    wood_choices,
+                    index=wood_ix,
+                    key=f"q_wood_pick_{qid}",
                 )
-                stain_default = st.text_input(
-                    "Default stain (for notes)",
-                    value=st.session_state.get(
-                        "quote_stain_default", "Michael's Cherry (OCS-113)"
-                    ),
-                    key=f"q_stain_{qid}",
+                if wood_pick == "Other / type below…":
+                    wood_default = st.text_input(
+                        "Custom wood",
+                        key=f"q_wood_custom_{qid}",
+                        placeholder="Type wood species…",
+                    )
+                else:
+                    wood_default = wood_pick
+            with wcol2:
+                stain_pick = st.selectbox(
+                    "Stain",
+                    _common_stains,
+                    index=stain_ix,
+                    key=f"q_stain_pick_{qid}",
                 )
+                if stain_pick == "Custom / type below…":
+                    stain_default = st.text_input(
+                        "Custom stain",
+                        key=f"q_stain_custom_{qid}",
+                        placeholder="Type stain name / OCS code…",
+                    )
+                else:
+                    stain_default = stain_pick
+
+            wood_default = (wood_default or "").strip()
+            stain_default = (stain_default or "").strip()
+            if wood_default:
                 st.session_state["quote_wood_default"] = wood_default
+            if stain_default:
                 st.session_state["quote_stain_default"] = stain_default
 
-            if st.button("Save customer / rates", key=f"q_save_hdr_{qid}"):
-                # Merge wood/stain into notes if not already present
-                note_out = (notes or "").strip()
-                spec_line = (
-                    f"Wood: {wood_default.strip()} · Stain: {stain_default.strip()}"
+            finish_default = st.selectbox(
+                "Finish",
+                ["finished", "unfinished"],
+                index=0
+                if st.session_state.get("quote_finish_default", "finished")
+                == "finished"
+                else 1,
+                key=f"q_finish_{qid}",
+            )
+            st.session_state["quote_finish_default"] = finish_default
+
+            hs1, hs2, hs3 = st.columns(3)
+            with hs1:
+                if st.button("Save customer / rates", key=f"q_save_hdr_{qid}"):
+                    note_out = (notes or "").strip()
+                    # Replace existing Wood/Stain lines or append
+                    import re as _re
+
+                    note_out = _re.sub(
+                        r"(?im)^Wood:.*$", "", note_out
+                    ).strip()
+                    note_out = _re.sub(
+                        r"(?im)^Stain:.*$", "", note_out
+                    ).strip()
+                    note_out = _re.sub(
+                        r"(?im)^Finish:.*$", "", note_out
+                    ).strip()
+                    spec_lines = []
+                    if wood_default:
+                        spec_lines.append(f"Wood: {wood_default}")
+                    if stain_default:
+                        spec_lines.append(f"Stain: {stain_default}")
+                    if finish_default:
+                        spec_lines.append(f"Finish: {finish_default}")
+                    if spec_lines:
+                        note_out = (note_out + "\n" + "\n".join(spec_lines)).strip()
+                    svc.update_quote(
+                        int(qid),
+                        customer_name=cust.strip(),
+                        customer_phone=phone.strip(),
+                        customer_email=email.strip(),
+                        notes=note_out,
+                        discount_pct=float(disc),
+                        tax_pct=float(tax),
+                    )
+                    st.success("Quote header saved (including wood/stain).")
+                    st.rerun()
+            with hs2:
+                if st.button(
+                    "Apply wood/stain to all lines",
+                    type="primary",
+                    key=f"q_apply_ws_{qid}",
+                    help="Update every line's wood, finish, and stain",
+                ):
+                    try:
+                        import re as _re
+
+                        _lines = svc.quote_lines(int(qid))
+                        n_upd = 0
+                        for _, lr in _lines.iterrows():
+                            lid = int(lr["id"])
+                            old_notes = str(lr.get("notes") or "")
+                            cleaned = _re.sub(
+                                r"(?i)\s*Stain:\s*[^·|\n]*", "", old_notes
+                            ).strip(" ·|\n")
+                            new_notes = (
+                                f"{cleaned} · Stain: {stain_default}".strip(" ·")
+                                if stain_default and cleaned
+                                else (
+                                    f"Stain: {stain_default}"
+                                    if stain_default
+                                    else cleaned
+                                )
+                            )
+                            svc.update_quote_line(
+                                lid,
+                                species=wood_default or lr.get("species"),
+                                finish_state=finish_default
+                                or lr.get("finish_state"),
+                                notes=new_notes,
+                            )
+                            n_upd += 1
+                        # Keep header notes in sync
+                        note_out = (notes or "").strip()
+                        note_out = _re.sub(r"(?im)^Wood:.*$", "", note_out).strip()
+                        note_out = _re.sub(r"(?im)^Stain:.*$", "", note_out).strip()
+                        note_out = _re.sub(r"(?im)^Finish:.*$", "", note_out).strip()
+                        bits = []
+                        if wood_default:
+                            bits.append(f"Wood: {wood_default}")
+                        if stain_default:
+                            bits.append(f"Stain: {stain_default}")
+                        if finish_default:
+                            bits.append(f"Finish: {finish_default}")
+                        if bits:
+                            note_out = (note_out + "\n" + "\n".join(bits)).strip()
+                        svc.update_quote(
+                            int(qid),
+                            notes=note_out,
+                            customer_name=cust.strip(),
+                            customer_phone=phone.strip(),
+                            customer_email=email.strip(),
+                            discount_pct=float(disc),
+                            tax_pct=float(tax),
+                        )
+                        st.success(
+                            f"Applied **{wood_default}** / **{stain_default}** / "
+                            f"**{finish_default}** to {n_upd} line(s)."
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+            with hs3:
+                st.caption(
+                    f"Active: **{wood_default or '—'}** · "
+                    f"**{stain_default or '—'}** · **{finish_default}**"
                 )
-                if wood_default.strip() and "Wood:" not in note_out:
-                    note_out = (note_out + "\n" + spec_line).strip()
-                svc.update_quote(
-                    int(qid),
-                    customer_name=cust.strip(),
-                    customer_phone=phone.strip(),
-                    customer_email=email.strip(),
-                    notes=note_out,
-                    discount_pct=float(disc),
-                    tax_pct=float(tax),
-                )
-                st.success("Quote header saved.")
-                st.rerun()
 
             # ---- Lines ----
             lines = svc.quote_lines(int(qid))
@@ -1010,7 +1212,8 @@ receives custom lines with FAF id, wood, stain, finish, and retail.
                     for _, r in lines.iterrows():
                         labels_l.append(
                             f"id {int(r['id'])} · {r.get('part_number') or ''} · "
-                            f"qty {r.get('qty')} · ${float(r.get('line_total') or 0):,.2f}"
+                            f"{r.get('species') or ''} · qty {r.get('qty')} · "
+                            f"${float(r.get('line_total') or 0):,.2f}"
                         )
                     lab_to_id = dict(zip(labels_l, line_ids))
                     elab = st.selectbox("Line", labels_l, key=f"q_edit_line_{qid}")
@@ -1041,16 +1244,62 @@ receives custom lines with FAF id, wood, stain, finish, and retail.
                             step=1.0,
                             key=f"q_edisc_{qid}",
                         )
+                    e4, e5, e6 = st.columns(3)
+                    with e4:
+                        ewood = st.text_input(
+                            "Wood",
+                            value=str(erow.get("species") or ""),
+                            key=f"q_ewood_{qid}",
+                        )
+                    with e5:
+                        # extract stain from notes if present
+                        import re as _re
+
+                        _sn = str(erow.get("notes") or "")
+                        _sm = _re.search(r"(?i)Stain:\s*([^·|\n]+)", _sn)
+                        _stain0 = (
+                            _sm.group(1).strip()
+                            if _sm
+                            else st.session_state.get("quote_stain_default", "")
+                        )
+                        estain = st.text_input(
+                            "Stain",
+                            value=_stain0,
+                            key=f"q_estain_{qid}",
+                        )
+                    with e6:
+                        efin = st.selectbox(
+                            "Finish",
+                            ["finished", "unfinished"],
+                            index=0
+                            if str(erow.get("finish_state") or "finished")
+                            == "finished"
+                            else 1,
+                            key=f"q_efin_{qid}",
+                        )
                     b1, b2 = st.columns(2)
                     with b1:
                         if st.button("Update line", key=f"q_upd_line_{qid}"):
+                            nnotes = str(erow.get("notes") or "")
+                            nnotes = _re.sub(
+                                r"(?i)\s*Stain:\s*[^·|\n]*", "", nnotes
+                            ).strip(" ·")
+                            if (estain or "").strip():
+                                nnotes = (
+                                    f"{nnotes} · Stain: {estain.strip()}".strip(" ·")
+                                    if nnotes
+                                    else f"Stain: {estain.strip()}"
+                                )
                             svc.update_quote_line(
                                 int(lab_to_id[elab]),
                                 qty=float(eqty),
                                 unit_retail=float(eretail),
                                 line_discount_pct=float(edisc),
+                                species=(ewood or "").strip() or erow.get("species"),
+                                finish_state=efin,
+                                notes=nnotes,
                             )
-                            st.success("Line updated.")
+                            st.success("Line updated (qty, price, wood, stain, finish).")
                             st.rerun()
                     with b2:
                         if st.button("Remove line", key=f"q_del_line_{qid}"):

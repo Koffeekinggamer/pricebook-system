@@ -286,6 +286,9 @@ class QuoteRepository:
             "notes",
             "part_number",
             "species",
+            "finish_state",
+            "vendor",
+            "collection",
         }
         # load current for recalc
         with self._conn() as conn:
@@ -308,7 +311,8 @@ class QuoteRepository:
                 UPDATE quote_lines SET
                     qty = ?, unit_retail = ?, unit_base = ?,
                     line_discount_pct = ?, description = ?, notes = ?,
-                    part_number = ?, species = ?, line_total = ?
+                    part_number = ?, species = ?, finish_state = ?,
+                    vendor = ?, collection = ?, line_total = ?
                 WHERE id = ?
                 """,
                 (
@@ -320,6 +324,9 @@ class QuoteRepository:
                     data.get("notes"),
                     data.get("part_number"),
                     data.get("species"),
+                    data.get("finish_state"),
+                    data.get("vendor"),
+                    data.get("collection"),
                     data.get("line_total"),
                     line_id,
                 ),
