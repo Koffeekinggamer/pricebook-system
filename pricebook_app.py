@@ -386,10 +386,32 @@ with tab_search:
     all_vendors = svc.list_vendors()
     favorites = [v for v in _load_favorites() if v in all_vendors]
 
-    # Two-column floor layout: search (left) | pinned builders list (right)
-    search_col, pin_col = st.columns([3.4, 1.15], gap="large")
+    # Collapsible pinned-builders side column (default open)
+    if "pin_panel_open" not in st.session_state:
+        st.session_state["pin_panel_open"] = True
+    pins_open = bool(st.session_state["pin_panel_open"])
+
+    if pins_open:
+        search_col, pin_col = st.columns([3.4, 1.15], gap="large")
+    else:
+        search_col = st.container()
+        pin_col = None
 
     with search_col:
+        if not pins_open:
+            # Compact control to reopen the pin rail
+            t1, t2 = st.columns([5.5, 1.2])
+            with t2:
+                n_pins = len(favorites)
+                label = f"Pins ({n_pins}) ›" if n_pins else "Pins ›"
+                if st.button(
+                    label,
+                    key="show_pin_panel",
+                    use_container_width=True,
+                    help="Show pinned builders column",
+                ):
+                    st.session_state["pin_panel_open"] = True
+                    st.rerun()
         st.caption(
             "**Boolean search** across every pricelist field (part #, description, "
             "collection, wood, builder, …).  \n"
@@ -554,31 +576,43 @@ with tab_search:
                 height=480,
             )
 
-    # ---- Separate pinned-builders column (not under the search bar) ----
-    with pin_col:
-        st.markdown("##### Pinned builders")
-        st.caption("Tap to filter search · pin from the Builder menu")
-        if not favorites:
-            st.info("No pins yet. Choose a **Builder**, then **Pin builder**.")
-        else:
-            for i, name in enumerate(favorites[:24]):
-                active = (
-                    st.session_state.get("sv") == name
-                    and not (st.session_state.get("sq") or "").strip()
-                )
-                label = f"● {name}" if active else name
+    # ---- Separate pinned-builders column (collapsible) ----
+    if pin_col is not None:
+        with pin_col:
+            head_l, head_r = st.columns([3.2, 1.0])
+            with head_l:
+                st.markdown("##### Pinned builders")
+            with head_r:
                 if st.button(
-                    label,
-                    key=f"fav_pick_{i}",
+                    "‹ Hide",
+                    key="hide_pin_panel",
                     use_container_width=True,
-                    type="primary" if active else "secondary",
+                    help="Collapse pinned builders column",
                 ):
-                    # Defer widget key updates to next run (before widgets instantiate)
-                    st.session_state["_pin_select"] = name
+                    st.session_state["pin_panel_open"] = False
                     st.rerun()
-            if st.button("Clear pins", key="clear_all_pins", use_container_width=True):
-                _save_favorites([])
-                st.rerun()
+            st.caption("Tap to filter search · pin from the Builder menu")
+            if not favorites:
+                st.info("No pins yet. Choose a **Builder**, then **Pin builder**.")
+            else:
+                for i, name in enumerate(favorites[:24]):
+                    active = (
+                        st.session_state.get("sv") == name
+                        and not (st.session_state.get("sq") or "").strip()
+                    )
+                    label = f"● {name}" if active else name
+                    if st.button(
+                        label,
+                        key=f"fav_pick_{i}",
+                        use_container_width=True,
+                        type="primary" if active else "secondary",
+                    ):
+                        # Defer widget key updates to next run (before widgets instantiate)
+                        st.session_state["_pin_select"] = name
+                        st.rerun()
+                if st.button("Clear pins", key="clear_all_pins", use_container_width=True):
+                    _save_favorites([])
+                    st.rerun()
 
 # ---------------------------------------------------------------------------
 # IMPORT — multi-file drop with per-builder multiplier
