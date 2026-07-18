@@ -54,10 +54,29 @@ Backups: `~/Documents/FAF-pricebook-backups/`
 - **Search** — retail prices, pin builders, 150-row limit
 - **Drop files** — import builder Excel/PDF (replace catalog)
 - **Vendors** — per-builder multipliers
-- **Admin** — backup / restore / cleanup
+- **Admin** — backup / restore / cleanup / **Viztech monthly sync**
 
 ## Defaults
 
 - Most builders: mult **2.7**
 - Genuine Oak: **1.7**
 - Retail = wholesale × multiplier
+
+## Viztech monthly updates
+
+Every **~30 days** this Mac can re-download builder pricelists from
+[viztechfurniture.com](https://viztechfurniture.com) and refresh the book.
+
+```bash
+# Install the schedule once
+./scripts/install_viztech_monthly_sync.sh
+
+# Or run now
+.venv/bin/python scripts/viztech_sync.py --dry-run
+.venv/bin/python scripts/viztech_sync.py
+```
+
+- Credentials: `.streamlit/secrets.toml` → `[viztech]` (gitignored)
+- Logs: `~/Documents/FAF-pricebook-backups/viztech-sync.log`
+- State: `~/Documents/FAF-pricebook-backups/viztech_sync_state.json`
+- Keeps builders **not** on Viztech; **FN Chair** always Level One

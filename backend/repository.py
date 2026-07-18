@@ -98,6 +98,195 @@ class PriceBookRepository:
         return [r[0] for r in rows]
 
     # ------------------------------------------------------------------ search
+    # Columns searched for every boolean term (anywhere in the pricelist row)
+    _SEARCH_FIELDS = (
+        "vendor",
+        "collection",
+        "part_number",
+        "description",
+        "species",
+        "dimensions",
+        "notes",
+        "source_file",
+        "finish_state",
+        "option_key",
+        "unit",
+    )
+
+    @staticmethod
+    def _like_escape(term: str) -> str:
+        """Escape LIKE wildcards so user input is literal (%, _, \\)."""
+        return (
+            (term or "")
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+
+    def _term_match_sql(self, term: str) -> tuple[str, list]:
+        """One term → SQL that matches if the term appears in ANY pricelist field."""
+        term = (term or "").strip().lower()
+        if not term:
+            return "1=1", []
+        like = f"%{self._like_escape(term)}%"
+        parts = [
+            f"lower(coalesce({col},'')) LIKE ? ESCAPE '\\'"
+            for col in self._SEARCH_FIELDS
+        ]
+        # Also match cast of base_price as text (e.g. "1250")
+        parts.append("cast(base_price as text) LIKE ? ESCAPE '\\'")
+        parts.append("cast(adjusted_price as text) LIKE ? ESCAPE '\\'")
+        return "(" + " OR ".join(parts) + ")", [like] * (len(self._SEARCH_FIELDS) + 2)
+    @staticmethod
+    def _tokenize_boolean(query: str) -> list:
+        """
+        Tokenize boolean query into: WORD, PHRASE, AND, OR, NOT, LPAREN, RPAREN.
+
+        Supported syntax:
+          oak nightstand          → AND (default between words)
+          oak AND nightstand      → AND
+          oak OR maple            → OR
+          oak | maple             → OR
+          nightstand NOT dust     → NOT
+          -dust                   → NOT dust
+          \"bar stool\"           → phrase
+          (oak OR maple) chair    → grouping
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+        tokens: list[tuple[str, str]] = []
+        i = 0
+        n = len(q)
+        while i < n:
+            ch = q[i]
+            if ch.isspace():
+                i += 1
+                continue
+            if ch in "()":
+                tokens.append(("LPAREN" if ch == "(" else "RPAREN", ch))
+                i += 1
+                continue
+            if ch in "|\u2228":  # | or ∨
+                tokens.append(("OR", "OR"))
+                i += 1
+                continue
+            if ch == "-" and (i + 1 < n) and not q[i + 1].isspace():
+                # leading -term as NOT (when not mid-SKU like GO-AVNNS)
+                # Only if at start or after space/operator
+                prev_ok = i == 0 or q[i - 1].isspace() or q[i - 1] in "()"
+                if prev_ok:
+                    tokens.append(("NOT", "NOT"))
+                    i += 1
+                    continue
+            if ch in "\"'":
+                quote = ch
+                i += 1
+                start = i
+                while i < n and q[i] != quote:
+                    i += 1
+                phrase = q[start:i]
+                if i < n:
+                    i += 1
+                tokens.append(("PHRASE", phrase.strip()))
+                continue
+            # word
+            start = i
+            while i < n and (not q[i].isspace()) and q[i] not in "()|\"'":
+                i += 1
+            word = q[start:i]
+            up = word.upper()
+            if up == "AND":
+                tokens.append(("AND", "AND"))
+            elif up == "OR":
+                tokens.append(("OR", "OR"))
+            elif up == "NOT":
+                tokens.append(("NOT", "NOT"))
+            else:
+                tokens.append(("WORD", word))
+        return tokens
+
+    def _boolean_to_sql(self, query: str) -> tuple[str, list, list[str]]:
+        """
+        Parse boolean query → (sql_clause, params, bare_terms_for_ranking).
+        Empty query → ("", [], []).
+        """
+        tokens = self._tokenize_boolean(query)
+        if not tokens:
+            return "", [], []
+
+        # Insert implicit AND between adjacent terms / groups
+        # e.g. WORD WORD → WORD AND WORD ; ) WORD → ) AND WORD ; NOT is unary
+        expanded: list[tuple[str, str]] = []
+        prev_end = False  # previous token ends a value/group
+        for typ, val in tokens:
+            is_start = typ in ("WORD", "PHRASE", "NOT", "LPAREN")
+            if expanded and prev_end and is_start:
+                expanded.append(("AND", "AND"))
+            expanded.append((typ, val))
+            prev_end = typ in ("WORD", "PHRASE", "RPAREN")
+
+        bare_terms: list[str] = []
+
+        # Shunting-yard → RPN
+        prec = {"OR": 1, "AND": 2, "NOT": 3}
+        right_assoc = {"NOT"}
+        output: list[tuple[str, str]] = []
+        stack: list[tuple[str, str]] = []
+        for typ, val in expanded:
+            if typ in ("WORD", "PHRASE"):
+                output.append((typ, val))
+                bare_terms.append(val)
+            elif typ == "NOT":
+                stack.append((typ, val))
+            elif typ in ("AND", "OR"):
+                while stack and stack[-1][0] in prec:
+                    top = stack[-1][0]
+                    if (prec[top] > prec[typ]) or (
+                        prec[top] == prec[typ] and typ not in right_assoc
+                    ):
+                        output.append(stack.pop())
+                    else:
+                        break
+                stack.append((typ, val))
+            elif typ == "LPAREN":
+                stack.append((typ, val))
+            elif typ == "RPAREN":
+                while stack and stack[-1][0] != "LPAREN":
+                    output.append(stack.pop())
+                if stack and stack[-1][0] == "LPAREN":
+                    stack.pop()
+        while stack:
+            if stack[-1][0] != "LPAREN":
+                output.append(stack.pop())
+            else:
+                stack.pop()
+
+        # RPN → SQL
+        sql_stack: list[tuple[str, list]] = []
+        for typ, val in output:
+            if typ in ("WORD", "PHRASE"):
+                sql_stack.append(self._term_match_sql(val))
+            elif typ == "NOT":
+                if not sql_stack:
+                    continue
+                clause, p = sql_stack.pop()
+                sql_stack.append((f"(NOT {clause})", p))
+            elif typ in ("AND", "OR"):
+                if len(sql_stack) < 2:
+                    continue
+                right_c, right_p = sql_stack.pop()
+                left_c, left_p = sql_stack.pop()
+                op = " AND " if typ == "AND" else " OR "
+                sql_stack.append(
+                    (f"({left_c}{op}{right_c})", left_p + right_p)
+                )
+
+        if not sql_stack:
+            return "", [], bare_terms
+        clause, params = sql_stack[-1]
+        return clause, params, bare_terms
+
     def search(
         self,
         query: str = "",
@@ -108,56 +297,36 @@ class PriceBookRepository:
         limit: int = DEFAULT_SEARCH_LIMIT,
     ) -> pd.DataFrame:
         """
-        Floor search: multi-token AND filter, ranked for sales use.
+        Boolean floor search across the full pricelist row.
+
+        Operators: AND (default between words), OR / |, NOT / -term,
+        \"phrases\", (parentheses).
+
+        Each term matches if found in any field: part #, description, collection,
+        builder, wood/option, dimensions, finish, notes, source file, prices.
 
         Ranking (best first):
           1. Exact part_number match
-          2. Part number starts with query
-          3. Part contains query
-          4. Description starts with / contains
-          Prefer finished over unfinished; demote dust covers / -DC accessories
-          when the query is a short SKU (so VECG beats VECG-DC).
+          2. Part number starts with query / term
+          3. Part contains term
+          4. Description match
+          Prefer finished; demote dust covers / -DC accessories.
         """
         clauses: list[str] = []
         params: list = []
         q = (query or "").strip()
-
         q_lower = q.lower()
-        # Fast SKU path: single compact token → prefer part_number prefix/exact
-        # (showroom floor typing VE-CG / GO-AVNNS / LA-ASH)
-        sku_like = bool(
-            q
-            and " " not in q
-            and len(q) <= 36
-            and re.match(r"^[A-Za-z0-9][A-Za-z0-9\-_/.]*$", q)
-        )
 
+        bare_terms: list[str] = []
         if q:
-            if sku_like:
-                # Part # first (exact / prefix / contains), then description fallback
-                clauses.append(
-                    "(lower(trim(coalesce(part_number,''))) = ? "
-                    "OR lower(trim(coalesce(part_number,''))) LIKE ? "
-                    "OR lower(trim(coalesce(part_number,''))) LIKE ? "
-                    "OR lower(coalesce(description,'')) LIKE ?)"
-                )
-                params.extend(
-                    [
-                        q_lower,
-                        q_lower + "%",
-                        "%" + q_lower + "%",
-                        "%" + q_lower + "%",
-                    ]
-                )
+            bool_sql, bool_params, bare_terms = self._boolean_to_sql(q)
+            if bool_sql:
+                clauses.append(bool_sql)
+                params.extend(bool_params)
             else:
-                for token in q.split():
-                    like = f"%{token}%"
-                    clauses.append(
-                        "(vendor LIKE ? OR collection LIKE ? OR part_number LIKE ? "
-                        "OR description LIKE ? OR species LIKE ? OR dimensions LIKE ? "
-                        "OR notes LIKE ? OR source_file LIKE ? OR finish_state LIKE ?)"
-                    )
-                    params.extend([like] * 9)
+                # User typed something that parsed to no real terms (e.g. "AND OR NOT")
+                # — do not return the whole catalog.
+                clauses.append("1=0")
 
         if collection and collection != "All":
             clauses.append("collection = ?")
@@ -172,18 +341,25 @@ class PriceBookRepository:
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         cols = ", ".join(SELECT_COLS)
 
-        # Ranking params (query as a whole, case-insensitive)
+        # Ranking: prefer matches on the full query string, then first term
+        rank_key = q_lower
+        if bare_terms:
+            # Prefer longest bare term (often the SKU) for ranking
+            rank_key = max((t.lower() for t in bare_terms), key=len)
+
         order_params: list = []
-        if q_lower:
+        if rank_key and bare_terms:
+            rk = self._like_escape(rank_key)
             order_sql = """
             ORDER BY
               CASE
                 WHEN lower(trim(coalesce(part_number,''))) = ? THEN 0
-                WHEN lower(trim(coalesce(part_number,''))) LIKE ? THEN 1
-                WHEN lower(trim(coalesce(part_number,''))) LIKE ? THEN 2
-                WHEN lower(trim(coalesce(description,''))) LIKE ? THEN 3
-                WHEN lower(trim(coalesce(description,''))) LIKE ? THEN 4
-                ELSE 5
+                WHEN lower(trim(coalesce(part_number,''))) LIKE ? ESCAPE '\\' THEN 1
+                WHEN lower(trim(coalesce(part_number,''))) LIKE ? ESCAPE '\\' THEN 2
+                WHEN lower(coalesce(description,'')) LIKE ? ESCAPE '\\' THEN 3
+                WHEN lower(coalesce(collection,'')) LIKE ? ESCAPE '\\' THEN 4
+                WHEN lower(coalesce(species,'')) LIKE ? ESCAPE '\\' THEN 5
+                ELSE 6
               END,
               CASE lower(coalesce(finish_state,''))
                 WHEN 'finished' THEN 0
@@ -199,13 +375,15 @@ class PriceBookRepository:
               vendor, collection, part_number, species_tier, description
             """
             order_params = [
-                q_lower,
-                q_lower + "%",
-                "%" + q_lower + "%",
-                q_lower + "%",
-                "%" + q_lower + "%",
+                rank_key,
+                rk + "%",
+                "%" + rk + "%",
+                "%" + rk + "%",
+                "%" + rk + "%",
+                "%" + rk + "%",
             ]
         else:
+            # No rank terms (empty query, or operators-only)
             order_sql = """
             ORDER BY vendor, collection, part_number, species_tier, description
             """
@@ -466,6 +644,7 @@ class PriceBookRepository:
                     MAX(p.base_price) AS max_base,
                     AVG(p.multiplier) AS avg_mult,
                     v.multiplier AS saved_mult,
+                    v.phone AS phone,
                     v.updated_at AS mult_updated
                 FROM pricebook p
                 LEFT JOIN vendors v ON v.name = p.vendor
@@ -483,21 +662,26 @@ class PriceBookRepository:
         *,
         vendor: Optional[str] = None,
     ) -> int:
+        """Set mult and recompute retail (even whole dollars)."""
+        # 2 * CEIL((base * mult) / 2) — next even dollar up
+        retail_expr = "2 * CEIL((base_price * ?) / 2.0 - 1e-12)"
         with self._conn() as conn:
             if vendor:
                 cur = conn.execute(
-                    """
+                    f"""
                     UPDATE pricebook
-                    SET multiplier = ?, adjusted_price = ROUND(base_price * ?, 2)
+                    SET multiplier = ?,
+                        adjusted_price = {retail_expr}
                     WHERE base_price IS NOT NULL AND vendor = ?
                     """,
                     (new_mult, new_mult, vendor),
                 )
             else:
                 cur = conn.execute(
-                    """
+                    f"""
                     UPDATE pricebook
-                    SET multiplier = ?, adjusted_price = ROUND(base_price * ?, 2)
+                    SET multiplier = ?,
+                        adjusted_price = {retail_expr}
                     WHERE base_price IS NOT NULL
                     """,
                     (new_mult, new_mult),
@@ -506,13 +690,14 @@ class PriceBookRepository:
             return cur.rowcount
 
     def recompute_adjusted(self, vendor: Optional[str] = None) -> int:
-        """Recompute retail from each row's own multiplier."""
+        """Recompute retail from each row's own multiplier (even whole dollars)."""
+        retail_expr = "2 * CEIL((base_price * multiplier) / 2.0 - 1e-12)"
         with self._conn() as conn:
             if vendor:
                 cur = conn.execute(
-                    """
+                    f"""
                     UPDATE pricebook
-                    SET adjusted_price = ROUND(base_price * multiplier, 2)
+                    SET adjusted_price = {retail_expr}
                     WHERE base_price IS NOT NULL AND multiplier IS NOT NULL
                       AND vendor = ?
                     """,
@@ -520,9 +705,9 @@ class PriceBookRepository:
                 )
             else:
                 cur = conn.execute(
-                    """
+                    f"""
                     UPDATE pricebook
-                    SET adjusted_price = ROUND(base_price * multiplier, 2)
+                    SET adjusted_price = {retail_expr}
                     WHERE base_price IS NOT NULL AND multiplier IS NOT NULL
                     """
                 )
@@ -552,17 +737,43 @@ class PriceBookRepository:
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(name) DO UPDATE SET
                     multiplier = excluded.multiplier,
-                    notes = excluded.notes,
+                    notes = COALESCE(excluded.notes, vendors.notes),
                     updated_at = excluded.updated_at
                 """,
                 (vendor, multiplier, notes or None, now),
             )
             conn.commit()
 
+    def set_vendor_phone(self, vendor: str, phone: str = "") -> None:
+        """Upsert builder phone; preserves existing multiplier when inserting."""
+        now = datetime.now().isoformat(timespec="seconds")
+        phone_clean = (phone or "").strip() or None
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO vendors (name, multiplier, phone, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    phone = excluded.phone,
+                    updated_at = excluded.updated_at
+                """,
+                (vendor, DEFAULT_MULTIPLIER, phone_clean, now),
+            )
+            conn.commit()
+
+    def get_vendor_phone(self, vendor: str) -> str:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT phone FROM vendors WHERE name = ?", (vendor,)
+            ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+        return ""
+
     def list_vendor_settings(self) -> pd.DataFrame:
         with self._conn() as conn:
             return pd.read_sql_query(
-                "SELECT name, multiplier, notes, updated_at FROM vendors ORDER BY name",
+                "SELECT name, multiplier, notes, phone, updated_at FROM vendors ORDER BY name",
                 conn,
             )
 

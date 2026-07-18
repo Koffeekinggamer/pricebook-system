@@ -729,14 +729,16 @@ def standardize_row(row: dict, *, default_multiplier: float = 2.7) -> Optional[d
         "base_price": round(base_f, 4) if base_f != int(base_f) else float(int(base_f)) if abs(base_f - int(base_f)) < 1e-9 else round(base_f, 2),
         "price_basis": "wholesale",
         "multiplier": mult_f,
-        "adjusted_price": round(base_f * mult_f, 2),
+        "adjusted_price": None,  # set below via even-dollar rule
         "unit": unit,
         "notes": notes,
         "source_file": source,
     })
-    # nicer base_price: 2 decimal for money
+    # nicer base_price: 2 decimal for money; retail = even whole dollars
+    from backend.pricing import retail_from_wholesale
+
     out["base_price"] = round(float(base_f), 2)
-    out["adjusted_price"] = round(float(base_f) * mult_f, 2)
+    out["adjusted_price"] = retail_from_wholesale(base_f, mult_f)
     return out
 
 

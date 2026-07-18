@@ -184,8 +184,10 @@ class QuoteRepository:
         unit_base = pricebook_row.get("base_price")
         unit_retail = pricebook_row.get("adjusted_price")
         if unit_retail is None and unit_base is not None:
+            from backend.pricing import retail_from_wholesale
+
             mult = pricebook_row.get("multiplier") or 2.7
-            unit_retail = round(float(unit_base) * float(mult), 2)
+            unit_retail = retail_from_wholesale(unit_base, mult)
 
         with self._conn() as conn:
             max_no = conn.execute(

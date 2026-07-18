@@ -109,7 +109,11 @@ def normalize_dataframe(
 
         vend = _s(get("vendor")) or _s(vendor)
         basis = _s(get("price_basis")) or price_basis or DEFAULT_PRICE_BASIS
-        adj = round(base * multiplier, 2) if base is not None else None
+        from backend.pricing import retail_from_wholesale
+
+        adj = (
+            retail_from_wholesale(base, multiplier) if base is not None else None
+        )
 
         rows.append({
             "vendor": vend,

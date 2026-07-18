@@ -171,6 +171,14 @@ class PriceBookService:
         self.ensure_ready()
         self.repo.set_vendor_multiplier(vendor, multiplier, notes=notes)
 
+    def set_vendor_phone(self, vendor: str, phone: str = "") -> None:
+        self.ensure_ready()
+        self.repo.set_vendor_phone(vendor, phone)
+
+    def get_vendor_phone(self, vendor: str) -> str:
+        self.ensure_ready()
+        return self.repo.get_vendor_phone(vendor)
+
     def list_vendor_settings(self) -> pd.DataFrame:
         self.ensure_ready()
         return self.repo.list_vendor_settings()
@@ -336,7 +344,9 @@ class PriceBookService:
                 bp = r.get("base_price")
                 if bp is not None:
                     try:
-                        r["adjusted_price"] = round(float(bp) * mult, 2)
+                        from backend.pricing import retail_from_wholesale
+
+                        r["adjusted_price"] = retail_from_wholesale(bp, mult)
                     except (TypeError, ValueError):
                         pass
 

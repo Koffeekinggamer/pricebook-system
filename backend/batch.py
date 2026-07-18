@@ -173,12 +173,14 @@ class BatchImporter:
                     )
                     continue
 
+                from backend.pricing import retail_from_wholesale
+
                 for r in rows:
                     r["vendor"] = vendor
                     r["multiplier"] = mult_used
                     if r.get("base_price") is not None:
-                        r["adjusted_price"] = round(
-                            float(r["base_price"]) * float(mult_used), 2
+                        r["adjusted_price"] = retail_from_wholesale(
+                            r["base_price"], mult_used
                         )
 
                 # One builder = one catalog. replace_* clears the vendor first.

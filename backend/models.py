@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS vendors (
     name TEXT PRIMARY KEY,
     multiplier REAL DEFAULT 2.7,
     notes TEXT,
+    phone TEXT,
     updated_at TEXT
 );
 
@@ -83,7 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_quote_lines_quote
     ON quote_lines (quote_id);
 """
 
-# Columns added after early v1 — migrate existing DBs
+# Columns added after early v1 — migrate existing DBs (pricebook table)
 NEW_COLUMNS = {
     "vendor": "TEXT",
     "dimensions": "TEXT",
@@ -91,6 +92,11 @@ NEW_COLUMNS = {
     "species_tier": "INTEGER",
     "finish_state": "TEXT",
     "price_basis": "TEXT",
+}
+
+# Columns added after early v1 — migrate existing DBs (vendors table)
+VENDOR_NEW_COLUMNS = {
+    "phone": "TEXT",
 }
 
 PRICEBOOK_COLS = [

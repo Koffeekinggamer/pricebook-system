@@ -25,11 +25,19 @@ from backend.config import APP_DIR, DEFAULT_MULTIPLIER, DEFAULT_SEARCH_LIMIT
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
+_FAVICON = APP_DIR / "assets" / "favicon.png"
+_LOGO = APP_DIR / "assets" / "logo.png"
+
 st.set_page_config(
     page_title="FAF Price Book",
+    page_icon=str(_FAVICON) if _FAVICON.is_file() else "🪵",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",  # floor default: full-width search; open « for sign-out/stats
 )
+
+# Brand mark in the sidebar (horse & buggy wordmark)
+if _LOGO.is_file():
+    st.logo(str(_LOGO), size="large")
 
 # iPad / phone-friendly density
 st.markdown(
@@ -47,6 +55,8 @@ st.markdown(
       }
       /* Favorite chip row */
       .faf-fav-row button { margin-right: 0.25rem; margin-bottom: 0.25rem; }
+      /* Sidebar brand */
+      [data-testid="stSidebar"] img { max-width: 100%; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -134,6 +144,73 @@ def _bytes(upload) -> bytes:
     return data
 
 
+def _auto_col_widths(
+    df: pd.DataFrame,
+    *,
+    min_px: int = 80,
+    max_px: int = 640,
+    char_px: float = 8.6,
+    pad_px: int = 40,
+    overrides: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Pixel widths sized to the longest value (and header) in each column."""
+    overrides = overrides or {}
+    widths: dict[str, int] = {}
+    for col in df.columns:
+        if col in overrides:
+            widths[col] = overrides[col]
+            continue
+        header_len = len(str(col))
+        if df.empty:
+            max_len = header_len
+        else:
+            # Full frame is fine — search is capped at DEFAULT_SEARCH_LIMIT
+            max_len = max(
+                header_len,
+                int(df[col].astype(str).fillna("").str.len().max() or 0),
+            )
+        widths[col] = min(max_px, max(min_px, int(max_len * char_px) + pad_px))
+    return widths
+
+
+def _dataframe_column_config(
+    df: pd.DataFrame,
+    *,
+    money_cols: set[str] | None = None,
+    number_formats: dict[str, str] | None = None,
+    help_text: dict[str, str] | None = None,
+    overrides: dict[str, int] | None = None,
+) -> dict:
+    """Build st.column_config with content-based widths so cells aren't clipped."""
+    money_cols = money_cols or set()
+    number_formats = number_formats or {}
+    help_text = help_text or {}
+    widths = _auto_col_widths(df, overrides=overrides)
+    cfg: dict = {}
+    for col, w in widths.items():
+        if col in money_cols:
+            cfg[col] = st.column_config.NumberColumn(
+                col,
+                format=number_formats.get(col, "$%.2f"),
+                width=w,
+                help=help_text.get(col),
+            )
+        elif col in number_formats:
+            cfg[col] = st.column_config.NumberColumn(
+                col,
+                format=number_formats[col],
+                width=w,
+                help=help_text.get(col),
+            )
+        else:
+            cfg[col] = st.column_config.TextColumn(
+                col,
+                width=w,
+                help=help_text.get(col),
+            )
+    return cfg
+
+
 def _last_backup_hint() -> str:
     try:
         from scripts.backup_db import list_backups
@@ -155,6 +232,50 @@ def _last_backup_hint() -> str:
         latest = files[0]
     age = datetime.fromtimestamp(latest.stat().st_mtime).strftime("%b %d %I:%M %p")
     return f"{latest.name} · {age}"
+
+
+def _viztech_state_path() -> Path:
+    return Path.home() / "Documents" / "FAF-pricebook-backups" / "viztech_sync_state.json"
+
+
+def _viztech_sync_hint() -> str:
+    """Human-readable last Viztech sync status (Admin only)."""
+    path = _viztech_state_path()
+    if not path.is_file():
+        return "Never run — use Install 30-day schedule or Run full sync below."
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw) if raw.strip() else {}
+    except Exception as exc:
+        return f"State file issue ({type(exc).__name__}) — run Check Viztech login to refresh."
+    if not isinstance(data, dict):
+        return "State file empty — run Check Viztech login to refresh."
+    when = data.get("last_success") or data.get("last_check") or data.get("last_run") or "?"
+    # ISO → short display
+    try:
+        if isinstance(when, str) and "T" in when:
+            when = when.replace("Z", "+00:00")
+            # Python 3.9: fromisoformat may not like all offsets; strip micros if needed
+            dt = datetime.fromisoformat(when)
+            when = dt.strftime("%b %d %Y %I:%M %p UTC")
+    except Exception:
+        pass
+    mode = data.get("mode") or ""
+    summary = data.get("summary") or {}
+    stats = summary.get("stats") or {}
+    bits = [f"Last: {when}"]
+    if mode:
+        bits.append(f"mode={mode}")
+    if summary:
+        bits.append(
+            f"ok={summary.get('ok', '?')} err={summary.get('err', '?')} "
+            f"skip={summary.get('skip', '?')}"
+        )
+    if stats.get("rows"):
+        bits.append(f"book={stats.get('rows'):,} rows / {stats.get('vendors')} builders")
+    if data.get("builders_seen"):
+        bits.append(f"builders seen={data['builders_seen']}")
+    return " · ".join(bits)
 
 
 def _load_favorites() -> list[str]:
@@ -200,6 +321,7 @@ st.sidebar.metric("Master rows", f"{stats['rows']:,}")
 st.sidebar.caption(
     f"{stats['vendors']} vendors · {stats['collections']} collections"
 )
+# Viztech sync status lives under Admin only (hidden from floor sidebar)
 
 # ---------------------------------------------------------------------------
 # Home dashboard strip
@@ -235,147 +357,184 @@ tab_search, tab_import, tab_vendors, tab_admin = st.tabs(
 # ---------------------------------------------------------------------------
 with tab_search:
     st.subheader("Find a price")
-    st.caption(
-        "Type a **part number** or words · SKU codes rank first · "
-        "finished items preferred on the floor."
-    )
 
-    q = st.text_input(
-        "Search the master book",
-        placeholder="VECG   ·   GO-AVNNS   ·   oak nightstand   ·   Abe bar stool",
-        key="sq",
-        label_visibility="collapsed",
-    )
+    # Apply pin selection BEFORE any widgets with keys sq/sv/sf exist
+    # (Streamlit forbids changing those keys after the widgets are created)
+    _pending_pin = st.session_state.pop("_pin_select", None)
+    if _pending_pin is not None:
+        st.session_state["sq"] = ""
+        st.session_state["sv"] = _pending_pin
+        st.session_state["sf"] = "finished"
 
     all_vendors = svc.list_vendors()
     favorites = [v for v in _load_favorites() if v in all_vendors]
 
-    # Quick-pick favorite builders (iPad-friendly)
-    if favorites:
-        st.caption("Pinned builders")
-        fav_cols = st.columns(min(len(favorites), 6))
-        for i, name in enumerate(favorites[:12]):
-            with fav_cols[i % len(fav_cols)]:
-                if st.button(name, key=f"fav_pick_{i}", use_container_width=True):
-                    st.session_state["sv"] = name
-                    st.session_state["sc"] = "All"
-                    st.session_state["_search_coll_builder"] = name
-                    st.rerun()
+    # Two-column floor layout: search (left) | pinned builders list (right)
+    search_col, pin_col = st.columns([3.4, 1.15], gap="large")
 
-    vendors = ["All"] + all_vendors
-    # Put favorites first after All for faster floor pick
-    if favorites:
-        rest = [v for v in all_vendors if v not in favorites]
-        vendors = ["All"] + favorites + rest
+    with search_col:
+        st.caption(
+            "**Boolean search** across every pricelist field (part #, description, "
+            "collection, wood, builder, …).  \n"
+            "`oak nightstand` = AND · `oak OR maple` · `nightstand NOT dust` · "
+            '`"bar stool"` phrase · `(oak OR cherry) chair` · SKUs rank first.'
+        )
 
-    f1, f2, f3, f4 = st.columns([1.4, 1.4, 1.0, 0.9])
-    with f1:
-        vf = st.selectbox("Builder", vendors, key="sv")
-    with f2:
-        coll_src = svc.list_collections(vendor=None if vf == "All" else vf)
-        collections = ["All"] + coll_src
-        # Changing builder invalidates collection options — reset to All to avoid
-        # Streamlit "value not in options" crash.
-        if st.session_state.get("_search_coll_builder") != vf:
-            st.session_state["sc"] = "All"
-            st.session_state["_search_coll_builder"] = vf
-        elif st.session_state.get("sc") not in collections:
-            st.session_state["sc"] = "All"
-        cf = st.selectbox("Collection", collections, key="sc")
-    with f3:
-        # Floor default: finished only
-        finish_opts = ["finished", "All", "unfinished"]
-        ff = st.selectbox("Finish", finish_opts, index=0, key="sf")
-    with f4:
-        st.write("")  # align with selectboxes
-        st.write("")
-        if vf != "All":
-            if vf in favorites:
-                if st.button("Unpin", key="unpin_builder", use_container_width=True):
-                    _save_favorites([x for x in favorites if x != vf])
-                    st.rerun()
-            else:
-                if st.button("Pin builder", key="pin_builder", use_container_width=True):
-                    _save_favorites(favorites + [vf])
-                    st.rerun()
+        q = st.text_input(
+            "Search the master book",
+            placeholder='VECG  ·  oak nightstand  ·  oak OR maple  ·  "bar stool"  ·  chair NOT dust',
+            key="sq",
+            label_visibility="collapsed",
+        )
 
-    # Don't dump the whole book when search is empty — unless a builder is chosen
-    if not (q or "").strip() and vf == "All":
-        results = pd.DataFrame()
-        empty_reason = "type"
-    else:
-        try:
-            results = svc.search(
-                q,
-                vendor=None if vf == "All" else vf,
-                collection=None if cf == "All" else cf,
-                finish_state=None if ff == "All" else ff,
-                limit=DEFAULT_SEARCH_LIMIT,
-            )
-            empty_reason = "none" if results.empty else ""
-        except Exception as exc:
+        vendors = ["All"] + all_vendors
+        # Put favorites first after All for faster floor pick in dropdown only
+        if favorites:
+            rest = [v for v in all_vendors if v not in favorites]
+            vendors = ["All"] + favorites + rest
+
+        f1, f2, f3 = st.columns([1.6, 1.0, 0.9])
+        with f1:
+            vf = st.selectbox("Builder", vendors, key="sv")
+        with f2:
+            # Floor default: finished only
+            finish_opts = ["finished", "All", "unfinished"]
+            ff = st.selectbox("Finish", finish_opts, index=0, key="sf")
+        with f3:
+            st.write("")  # align with selectboxes
+            st.write("")
+            if vf != "All":
+                if vf in favorites:
+                    if st.button("Unpin", key="unpin_builder", use_container_width=True):
+                        _save_favorites([x for x in favorites if x != vf])
+                        st.rerun()
+                else:
+                    if st.button(
+                        "Pin builder", key="pin_builder", use_container_width=True
+                    ):
+                        _save_favorites(favorites + [vf])
+                        st.rerun()
+
+        # Don't dump the whole book when search is empty — unless a builder is chosen
+        if not (q or "").strip() and vf == "All":
             results = pd.DataFrame()
-            empty_reason = "error"
-            st.error(f"Search failed: {exc}")
-    display = results.copy()
-
-    # Floor table emphasizes RETAIL
-    if display.empty:
-        if empty_reason == "type":
-            st.info(
-                "Type a part number or product words above — or pick a **Builder** to browse."
-            )
-        elif empty_reason == "error":
-            pass  # error already shown
+            empty_reason = "type"
         else:
-            st.info(
-                "No hits — try fewer words, or check **Builder** / **Finish** filters."
+            try:
+                results = svc.search(
+                    q,
+                    vendor=None if vf == "All" else vf,
+                    collection=None,  # Collection filter hidden on floor UI
+                    finish_state=None if ff == "All" else ff,
+                    limit=DEFAULT_SEARCH_LIMIT,
+                )
+                empty_reason = "none" if results.empty else ""
+            except Exception as exc:
+                results = pd.DataFrame()
+                empty_reason = "error"
+                st.error(f"Search failed: {exc}")
+        display = results.copy()
+
+        # Floor table emphasizes RETAIL
+        if display.empty:
+            if empty_reason == "type":
+                st.info(
+                    "Type a part number or product words above — or pick a **Builder** "
+                    "to browse (or use **Pinned** on the right)."
+                )
+            elif empty_reason == "error":
+                pass  # error already shown
+            else:
+                if ff == "finished" and vf != "All":
+                    st.info(
+                        "No **finished** hits for this builder — try **Finish → All** "
+                        "(or **unfinished**), or clear the search box."
+                    )
+                else:
+                    st.info(
+                        "No hits — try fewer words, Boolean **OR**, or check "
+                        "**Builder** / **Finish** filters."
+                    )
+        else:
+            hit_note = f"**{len(display):,}** hits"
+            if len(display) >= DEFAULT_SEARCH_LIMIT:
+                hit_note += f" (showing first {DEFAULT_SEARCH_LIMIT})"
+            st.markdown(
+                f"{hit_note} · "
+                f"<span style='color:#2d4a30;font-weight:700'>Retail is what the customer pays</span>",
+                unsafe_allow_html=True,
             )
-    else:
-        hit_note = f"**{len(display):,}** hits"
-        if len(display) >= DEFAULT_SEARCH_LIMIT:
-            hit_note += f" (showing first {DEFAULT_SEARCH_LIMIT})"
-        st.markdown(
-            f"{hit_note} · "
-            f"<span style='color:#2d4a30;font-weight:700'>Retail is what the customer pays</span>",
-            unsafe_allow_html=True,
-        )
-        # Floor view: retail only (wholesale/mult managed on Vendors tab)
-        show_cols = [
-            c
-            for c in [
-                "part_number",
-                "description",
-                "vendor",
-                "collection",
-                "species",
-                "finish_state",
-                "adjusted_price",
+            # Floor view: retail only (wholesale/mult managed on Vendors tab)
+            show_cols = [
+                c
+                for c in [
+                    "collection",
+                    "part_number",
+                    "description",
+                    "vendor",
+                    "species",
+                    "finish_state",
+                    "adjusted_price",
+                ]
+                if c in display.columns
             ]
-            if c in display.columns
-        ]
-        view = display[show_cols].rename(
-            columns={
-                "part_number": "Part #",
-                "description": "Description",
-                "vendor": "Builder",
-                "collection": "Collection",
-                "species": "Wood / option",
-                "finish_state": "Finish",
-                "adjusted_price": "RETAIL",
-            }
-        )
-        st.dataframe(
-            view,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "RETAIL": st.column_config.NumberColumn(
-                    "RETAIL", format="$%.2f", help="Customer price"
+            view = display[show_cols].rename(
+                columns={
+                    "part_number": "Part #",
+                    "description": "Description",
+                    "vendor": "Builder",
+                    "collection": "Collection",
+                    "species": "Wood / option",
+                    "finish_state": "Finish",
+                    "adjusted_price": "RETAIL",
+                }
+            )
+            # Content-based widths so headers + values fully show (scrolls if needed)
+            st.dataframe(
+                view,
+                use_container_width=True,
+                hide_index=True,
+                column_config=_dataframe_column_config(
+                    view,
+                    money_cols={"RETAIL"},
+                    number_formats={"RETAIL": "$%.0f"},
+                    help_text={
+                        "RETAIL": "Customer price — wholesale × mult, rolled up to next even dollar"
+                    },
+                    overrides={
+                        "Part #": 110,
+                        "Finish": 100,
+                        "RETAIL": 100,
+                    },
                 ),
-            },
-            height=480,
-        )
+                height=480,
+            )
+
+    # ---- Separate pinned-builders column (not under the search bar) ----
+    with pin_col:
+        st.markdown("##### Pinned builders")
+        st.caption("Tap to filter search · pin from the Builder menu")
+        if not favorites:
+            st.info("No pins yet. Choose a **Builder**, then **Pin builder**.")
+        else:
+            for i, name in enumerate(favorites[:24]):
+                active = (
+                    st.session_state.get("sv") == name
+                    and not (st.session_state.get("sq") or "").strip()
+                )
+                label = f"● {name}" if active else name
+                if st.button(
+                    label,
+                    key=f"fav_pick_{i}",
+                    use_container_width=True,
+                    type="primary" if active else "secondary",
+                ):
+                    # Defer widget key updates to next run (before widgets instantiate)
+                    st.session_state["_pin_select"] = name
+                    st.rerun()
+            if st.button("Clear pins", key="clear_all_pins", use_container_width=True):
+                _save_favorites([])
+                st.rerun()
 
 # ---------------------------------------------------------------------------
 # IMPORT — multi-file drop with per-builder multiplier
@@ -433,7 +592,9 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
             bp = r.get("base_price")
             if bp is not None:
                 try:
-                    r["adjusted_price"] = round(float(bp) * mult, 2)
+                    from backend.pricing import retail_from_wholesale
+
+                    r["adjusted_price"] = retail_from_wholesale(bp, mult)
                 except (TypeError, ValueError):
                     pass
             out.append(r)
@@ -642,7 +803,8 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
                                 format="$%.2f"
                             ),
                             "RETAIL": st.column_config.NumberColumn(
-                                format="$%.2f"
+                                format="$%.0f",
+                                help="Rolled up to next even dollar",
                             ),
                             "Mult": st.column_config.NumberColumn(format="%.2f"),
                         },
@@ -655,8 +817,8 @@ The system will **standardize** rows (long-form: SKU × wood/option × finish) a
                         ]
                         if rets:
                             st.caption(
-                                f"Retail range after x{mult_final:g}: "
-                                f"**${min(rets):,.2f}** – **${max(rets):,.2f}** · "
+                                f"Retail range after x{mult_final:g} (even $): "
+                                f"**${min(rets):,.0f}** – **${max(rets):,.0f}** · "
                                 f"{len(rows):,} sellable rows"
                             )
                     except Exception:
@@ -790,6 +952,7 @@ with tab_vendors:
                 c
                 for c in [
                     "vendor",
+                    "phone",
                     "rows",
                     "collections",
                     "saved_mult",
@@ -798,6 +961,11 @@ with tab_vendors:
                 if c in summary.columns
             ]
         ].copy()
+        if "phone" not in edit_df.columns:
+            edit_df["phone"] = ""
+        edit_df["phone"] = (
+            edit_df["phone"].fillna("").astype(str).replace({"nan": "", "None": ""})
+        )
         # Prefer saved_mult; fall back to avg_mult
         edit_df["Multiplier"] = edit_df.apply(
             lambda r: float(
@@ -810,6 +978,7 @@ with tab_vendors:
         edit_df = edit_df.rename(
             columns={
                 "vendor": "Builder",
+                "phone": "Phone",
                 "rows": "Items",
                 "collections": "Collections",
             }
@@ -818,6 +987,7 @@ with tab_vendors:
             c
             for c in [
                 "Builder",
+                "Phone",
                 "Items",
                 "Collections",
                 "Multiplier",
@@ -829,8 +999,16 @@ with tab_vendors:
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
+            # Lock stats columns; Phone + Multiplier are editable
+            disabled=["Builder", "Items", "Collections"],
             column_config={
                 "Builder": st.column_config.TextColumn(disabled=True),
+                "Phone": st.column_config.TextColumn(
+                    "Phone",
+                    help="Builder main phone — edit then Save",
+                    width="medium",
+                    max_chars=40,
+                ),
                 "Items": st.column_config.NumberColumn(format="%d", disabled=True),
                 "Collections": st.column_config.NumberColumn(
                     format="%d", disabled=True
@@ -850,13 +1028,13 @@ with tab_vendors:
 
         st.caption(
             "Quick tips: set **2.7** for most Amish builders · **1.7** for Genuine Oak "
-            "(or whatever deal you run)."
+            "(or whatever deal you run). **Phone** is next to each builder for the floor."
         )
 
         b1, b2, b3 = st.columns([1.4, 1.0, 1.0])
         with b1:
             if st.button(
-                "Save multipliers & update retail prices",
+                "Save phone & multipliers · update retail",
                 type="primary",
                 use_container_width=True,
             ):
@@ -864,9 +1042,11 @@ with tab_vendors:
                 updated_rows = 0
                 for _, r in edited.iterrows():
                     builder = str(r["Builder"])
+                    phone = str(r.get("Phone") or "").strip()
                     mult = float(r["Multiplier"])
                     if mult <= 0:
                         continue
+                    svc.set_vendor_phone(builder, phone)
                     svc.set_vendor_multiplier(
                         builder,
                         mult,
@@ -876,7 +1056,7 @@ with tab_vendors:
                     updated_builders += 1
                     updated_rows += int(n or 0)
                 st.success(
-                    f"Saved **{updated_builders}** builders · "
+                    f"Saved phone + mult for **{updated_builders}** builders · "
                     f"recomputed **{updated_rows:,}** retail prices"
                 )
                 st.rerun()
@@ -937,6 +1117,86 @@ with tab_admin:
     s2.metric("Builders", stats["vendors"])
     st.caption(f"Database: `{svc.path}`")
     st.caption(f"Last backup: {_last_backup_hint()}")
+    st.caption(f"Viztech sync: {_viztech_sync_hint()}")
+
+    st.markdown("##### Viztech monthly update")
+    st.caption(
+        "Every **~30 days** this Mac downloads builder pricelists from "
+        "**viztechfurniture.com** and updates the book "
+        "(keeps builders Viztech doesn’t have · FN Chair = Level One only)."
+    )
+    st.info(_viztech_sync_hint())
+    vz1, vz2, vz3 = st.columns(3)
+    with vz1:
+        if st.button("Check Viztech login", use_container_width=True):
+            import subprocess
+
+            py = APP_DIR / ".venv" / "bin" / "python"
+            script = APP_DIR / "scripts" / "viztech_sync.py"
+            with st.spinner("Logging into Viztech…"):
+                proc = subprocess.run(
+                    [str(py), str(script), "--dry-run"],
+                    cwd=str(APP_DIR),
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            if proc.returncode == 0:
+                st.success("Viztech login OK — builders listed.")
+                get_service.clear()
+            else:
+                st.error("Check failed — see logs below.")
+            if proc.stdout:
+                st.code(proc.stdout[-2500:])
+            if proc.stderr:
+                st.code(proc.stderr[-1500:])
+    with vz2:
+        if st.button(
+            "Run full Viztech sync now",
+            type="primary",
+            use_container_width=True,
+            help="Downloads all pricelists and re-imports (can take 10–30+ minutes)",
+        ):
+            import subprocess
+
+            py = APP_DIR / ".venv" / "bin" / "python"
+            script = APP_DIR / "scripts" / "viztech_sync.py"
+            with st.spinner(
+                "Syncing Viztech → FAF (download + import). Leave this tab open…"
+            ):
+                proc = subprocess.run(
+                    [str(py), str(script)],
+                    cwd=str(APP_DIR),
+                    capture_output=True,
+                    text=True,
+                    timeout=14400,
+                )
+            if proc.returncode == 0:
+                get_service.clear()
+                st.success("Viztech sync finished. Reloading stats…")
+                st.rerun()
+            else:
+                st.error("Sync failed — check output / viztech-sync.err")
+            if proc.stdout:
+                st.code(proc.stdout[-4000:])
+            if proc.stderr:
+                st.code(proc.stderr[-2000:])
+    with vz3:
+        if st.button("Install 30-day schedule", use_container_width=True):
+            import subprocess
+
+            install = (
+                Path(__file__).resolve().parent
+                / "scripts"
+                / "install_viztech_monthly_sync.sh"
+            )
+            rc = subprocess.call(["/bin/zsh", str(install)])
+            if rc == 0:
+                st.success("LaunchAgent installed — runs every ~30 days.")
+            else:
+                st.error(
+                    "Install failed — run scripts/install_viztech_monthly_sync.sh in Terminal."
+                )
 
     st.markdown("##### Backup DB")
     st.caption(
@@ -964,7 +1224,6 @@ with tab_admin:
                 st.success("Weekly LaunchAgent installed (Sunday 6:00 AM).")
             else:
                 st.error("Install failed — run scripts/install_weekly_backup.sh in Terminal.")
-
     try:
         from scripts.backup_db import list_backups, restore_from
 
@@ -1050,9 +1309,12 @@ python -m backend.cli search "oak nightstand"
 python scripts/backup_db.py backup
 python scripts/backup_db.py list
 python scripts/backup_db.py restore --file master_pricebook-YYYYMMDD-HHMMSS.db
+python scripts/viztech_sync.py --dry-run
+python scripts/viztech_sync.py
         """.strip()
     )
 
 st.caption(
-    "FAF Price Book · Search · Drop files · Vendors · one builder = one catalog"
+    "FAF Price Book · Search · Drop files · Vendors · Admin · "
+    "one builder = one catalog · Viztech sync every ~30 days"
 )

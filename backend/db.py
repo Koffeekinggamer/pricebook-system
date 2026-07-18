@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from backend.config import DB_PATH
-from backend.models import NEW_COLUMNS, SCHEMA_SQL
+from backend.models import NEW_COLUMNS, SCHEMA_SQL, VENDOR_NEW_COLUMNS
 
 
 def get_connection(db_path: Optional[Union[str, Path]] = None) -> sqlite3.Connection:
@@ -30,5 +30,11 @@ def init_db(db_path: Optional[Union[str, Path]] = None) -> Path:
         for col, typ in NEW_COLUMNS.items():
             if col not in existing:
                 conn.execute(f"ALTER TABLE pricebook ADD COLUMN {col} {typ}")
+        vendor_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(vendors)").fetchall()
+        }
+        for col, typ in VENDOR_NEW_COLUMNS.items():
+            if col not in vendor_cols:
+                conn.execute(f"ALTER TABLE vendors ADD COLUMN {col} {typ}")
         conn.commit()
     return path

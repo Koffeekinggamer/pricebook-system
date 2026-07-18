@@ -1,51 +1,103 @@
 # Deploy FAF Price Book (online access)
 
-## Live public access (working now)
+## Source of truth
 
-While this Mac is on (autostart enabled):
+| Asset | Location | Notes |
+|-------|----------|--------|
+| **Authoritative catalog** | `~/FAF-pricebook/master_pricebook.db` on the store Mac | **Never** committed to GitHub |
+| **App code** | `origin` → `Koffeekinggamer/pricebook-system` | Safe to deploy |
+| **Backups** | `~/Documents/FAF-pricebook-backups/` | Local only |
+
+**Important:** Streamlit Cloud / Fly deploy the **code**, not the private ~500k-row DB (gitignored).  
+Floor staff should use **local** or the **Mac public tunnel** for current prices.
+
+---
+
+## Recommended: local + Cloudflare quick tunnel
+
+While this Mac is on (LaunchAgents keep Streamlit up):
 
 | | |
 |--|--|
-| **Public URL** | See `~/Documents/FAF-pricebook-backups/CURRENT_PUBLIC_URL.txt` |
-| **Local** | http://localhost:8501 |
+| **Local** | http://127.0.0.1:8501 |
+| **Public** | See `~/Documents/FAF-pricebook-backups/CURRENT_PUBLIC_URL.txt` |
 | **Login** | Foothills / Amish |
 
-Restart tunnel anytime:
+Refresh the public URL anytime:
 
 ```bash
 ~/FAF-pricebook/scripts/public_tunnel.sh
-# or
-ssh -R 80:127.0.0.1:8501 nokey@localhost.run
+# writes CURRENT_PUBLIC_URL.txt when successful
 ```
 
-## Streamlit Community Cloud (permanent `*.streamlit.app`)
+Or:
 
-Repo is **public**: https://github.com/Koffeekinggamer/pricebook-system
+```bash
+# ensure Streamlit on 8501 first
+cloudflared tunnel --url http://127.0.0.1:8501 --no-autoupdate
+# copy the https://….trycloudflare.com URL into CURRENT_PUBLIC_URL.txt
+```
 
-1. Open https://share.streamlit.io/deploy
-2. Sign in with GitHub as **Koffeekinggamer**
-3. Fill in:
-   - Repository: `Koffeekinggamer/pricebook-system`
-   - Branch: `main`
-   - Main file path: `pricebook_app.py`
-   - App URL (optional): `faf-pricebook`
-4. Deploy
-5. Settings → Secrets (optional — defaults work):
+**Autostart (this Mac):**
+
+```bash
+~/FAF-pricebook/scripts/install_autostart.sh   # Streamlit + tunnel agents
+~/FAF-pricebook/scripts/install_weekly_backup.sh
+~/FAF-pricebook/scripts/install_viztech_monthly_sync.sh
+```
+
+---
+
+## Streamlit Community Cloud (code only — empty/small DB unless you inject data)
+
+Repo: https://github.com/Koffeekinggamer/pricebook-system
+
+1. https://share.streamlit.io/deploy  
+2. Repository `Koffeekinggamer/pricebook-system` · branch `main` · main file `pricebook_app.py`  
+3. Secrets (optional):
 
 ```toml
 [auth]
 username = "Foothills"
 password = "Amish"
+
+# Viztech monthly sync does NOT run on Cloud (no LaunchAgent / no local downloads)
 ```
 
-## Fly.io (Docker, permanent)
+**Do not expect** the full store catalog on Cloud without a separate DB upload strategy (not implemented).
+
+---
+
+## Fly.io (Docker — same DB limitation)
 
 ```bash
 export PATH="$HOME/.fly/bin:$PATH"
 fly auth login
 cd ~/FAF-pricebook
-fly launch --copy-config --name faf-pricebook --region iad --yes
-fly deploy
+fly deploy -a faf-pricebook
 ```
 
-Dockerfile + fly.toml are in the repo.
+App name in `fly.toml`: `faf-pricebook`.  
+Without mounting/uploading `master_pricebook.db`, the Fly app will not match the floor Mac.
+
+---
+
+## Viztech monthly catalog refresh (floor Mac)
+
+```bash
+.venv/bin/python scripts/viztech_sync.py --dry-run
+.venv/bin/python scripts/viztech_sync.py
+```
+
+Schedule: LaunchAgent `com.faf.pricebook.viztech-sync` every ~30 days.  
+Credentials: `.streamlit/secrets.toml` `[viztech]` (gitignored).
+
+---
+
+## Decision matrix
+
+| Need | Use |
+|------|-----|
+| Floor sales today, full book | **Local 8501** or **quick tunnel** |
+| Permanent public marketing demo | Cloud/Fly with a **sanitized sample DB** (not full wholesale) |
+| Keep prices private | Never commit `*.db`; use Mac tunnel only for staff |

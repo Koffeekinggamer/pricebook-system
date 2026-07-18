@@ -1,28 +1,31 @@
 # FAF Pricebook — LIVE
 
-**Updated:** 2026-07-17  
+**Updated:** 2026-07-18  
 **Folder:** `~/FAF-pricebook`  
-**GitHub (private):** https://github.com/Koffeekinggamer/pricebook-system  
-**Status:** LIVE · floor-perfected UI · search + quotes + PDF · **~29,631 rows · 13 vendors**
+**GitHub:** https://github.com/Koffeekinggamer/pricebook-system (`origin`)  
+**Status:** LIVE · Viztech-backed catalog · boolean search · monthly sync  
+**Book size:** **~476,824 rows · 155 vendors · 3,104 collections**
+
+> **Full agent handoff:** [HANDOFF.md](./HANDOFF.md) — read that first when starting a new session.
 
 ## Run
 
 ```bash
 cd ~/FAF-pricebook
 source .venv/bin/activate
-streamlit run pricebook_app.py
-# http://localhost:8501
+streamlit run pricebook_app.py --server.port 8501
+# http://127.0.0.1:8501
+# Login: Foothills / Amish
 ```
+
+Public tunnel (ephemeral): `~/Documents/FAF-pricebook-backups/CURRENT_PUBLIC_URL.txt`
 
 ## Backup (local only — never GitHub)
 
 ```bash
 .venv/bin/python -m backend.cli backup-db
 # → ~/Documents/FAF-pricebook-backups/master_pricebook-YYYYMMDD-HHMMSS.db
-# keeps newest 20 copies
 ```
-
-Or: `./scripts/backup_db.sh` · override dir with `FAF_PRICEBOOK_BACKUP_DIR=...`
 
 ## CLI
 
@@ -32,83 +35,31 @@ Or: `./scripts/backup_db.sh` · override dir with `FAF_PRICEBOOK_BACKUP_DIR=...`
 .venv/bin/python -m backend.cli search "nightstand" --vendor "Genuine Oak"
 .venv/bin/python -m backend.cli standardize
 .venv/bin/python -m backend.cli backup-db
+.venv/bin/python scripts/viztech_sync.py --dry-run
+.venv/bin/python scripts/viztech_sync.py
 ```
-
-## Vendors (one each)
-
-| Vendor | Rows | Mult | Collections notes |
-|--------|------|------|-------------------|
-| Hope Wood | 14,931 | 2.7 | Real categories (Sofa Mate, Queen Anne, Mission, …) |
-| Genuine Oak | 5,613 | **1.7** | default **Casegoods** + named collections |
-| FN Chair | 3,067 | 2.7 | default **Seating** |
-| Windy Acres Furniture | 1,501 | 2.7 | Real wood groups + fin/unf |
-| Millers Woodshop | 1,225 | 2.7 | Mult-* → Gun Cabinets / Bookcases / TV Consoles |
-| Premier Woodcraft | 1,016 | 2.7 | |
-| Rainbow Bedding | 708 | 2.7 | footer summary junk removed |
-| LuxHome | 558 | 2.7 | |
-| Patio Kraft | 452 | 2.7 | |
-| Charleston Forge | 244 | 2.7 | |
-| Beaverdam | 143 | 2.7 | |
-| GVWI | 93 | 2.7 | |
-| LAMB | 80 | 2.7 | |
 
 ## Decisions locked in
 
 - One builder = one vendor (`replace_vendor` default)
-- Collections: drop option/upcharge junk; keep product categories
-- Genuine Oak mult **1.7**; others **2.7**
+- Mult: default **2.7**; Genuine Oak **1.7**
+- FN Chair = **Level One only** on Viztech import
+- Viztech sync keeps builders not on Viztech
 - Local DB gitignored; backup to Documents only
-- Search ranks exact SKU first, finished woods next; demotes dust covers (`VECG` before `VECG-DC`)
+- Search: boolean; Collection column first; sidebar collapsed by default
+- Vendors: Phone + Multiplier editable; Items/Collections locked
 
-## When UI-ready?
+## Next work (priority)
 
-**Backend is ready for UI-focused work now.**  
-Master data, one-builder policy, search ranking, quotes, import/batch, mults, backup, and standards are solid. Remaining backend polish (more builders, data fixes) can happen in parallel with UI.
+1. Fix ~26 Viztech files that import as 0 rows (formula sheets)
+2. Commit/push product code (no DB/secrets) if user wants
+3. Fill builder phones / better scrape
+4. Confirm hosted deploy strategy (local DB is source of truth)
 
 ## Next prompt (copy-paste)
 
 ```
-Continue FAF Pricebook at ~/FAF-pricebook.
-
-## Context (do not re-litigate)
-- Streamlit + SQLite private multiplier engine — Foothills Amish Furniture
-- Repo: https://github.com/Koffeekinggamer/pricebook-system (origin/main)
-- Also exists (older twin): faf-pricebook-system — do NOT use; origin is pricebook-system
-- Folder: ~/FAF-pricebook · work here (or Documents/GitHub/pricebook-system)
-- Local DB only: master_pricebook.db (~29,631 rows · 13 vendors · 265 collections) — gitignored
-- UI: pricebook_app.py (thin) · logic: backend.PriceBookService
-- Docs: STANDARDS.md · LAYOUT_SYSTEM.md · CONTINUE.md · PROMPTS.md
-- Mult: default 2.7; Genuine Oak 1.7; wholesale base × mult = retail
-- One builder = one vendor; replace_vendor default; never duplicate builders
-- Search ranks exact SKU first, finished next, dust covers demoted
-- Backup: python -m backend.cli backup-db → ~/Documents/FAF-pricebook-backups/
-
-## Builders (one each)
-Hope Wood, Genuine Oak, FN Chair, Windy Acres Furniture, Millers Woodshop,
-Premier Woodcraft, Rainbow Bedding, LuxHome, Patio Kraft, Charleston Forge,
-Beaverdam, GVWI, LAMB
-
-## Run
-cd ~/FAF-pricebook && source .venv/bin/activate && streamlit run pricebook_app.py
-# http://localhost:8501
-
-## Phase status
-DONE: importers, standardize, collections, one-builder policy, floor search
-ranking, quote PDF smoke test, private DB backup, GitHub sync to pricebook-system.
-BACKEND IS READY FOR UI WORK.
-
-## Next work — UI-first (default if I say “keep going”)
-1) Floor UI polish (Search tab): bigger search box, finished-only default,
-   clearer retail emphasis, keyboard-friendly add-to-quote
-2) Quotes tab polish: edit qty/discount inline, better PDF layout with FAF branding,
-   line remove without expander friction
-3) Vendors tab: simple mult edit + row counts; hide raw tech noise
-4) Home/dashboard strip: today’s quote count, last backup hint, top vendors
-5) Optional later backend: more builders, Rainbow null collections, exact-match only mode
-
-Rules: prefer backend.PriceBookService for logic; keep Streamlit thin;
-replace_vendor on re-import; long-form rows; push to origin (pricebook-system);
-never commit *.db or .venv.
-
-Next: [UI polish / keep going / or name a feature]
+Continue FAF Price Book at ~/FAF-pricebook.
+Read HANDOFF.md first.
+Next: [failed Viztech parsers / git commit / phones / deploy / user request]
 ```

@@ -126,14 +126,18 @@ def main() -> int:
     ):
         print(f"  {r[0]}: {r[1]:,}")
 
+    # Retail = next even whole dollar up from base × mult
     mism = cur.execute(
         """
         SELECT COUNT(*) FROM pricebook
         WHERE base_price IS NOT NULL AND multiplier IS NOT NULL AND adjusted_price IS NOT NULL
-          AND ABS(adjusted_price - ROUND(base_price * multiplier, 2)) > 0.02
+          AND ABS(
+                adjusted_price
+                - (2 * CEIL((base_price * multiplier) / 2.0 - 1e-12))
+              ) > 0.02
         """
     ).fetchone()[0]
-    print(f"retail mismatches after: {mism}")
+    print(f"retail mismatches after (even-dollar rule): {mism}")
     con.close()
     return 0 if mism == 0 else 1
 
