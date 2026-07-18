@@ -88,6 +88,94 @@ class PriceBookRepository:
                 ).fetchall()
         return [r[0] for r in rows]
 
+    # Tokens that mark a real wood / outdoor option for the Wood dropdown
+    _WOOD_DROPDOWN_RE = re.compile(
+        r"(?i)\b("
+        r"oak|maple|cherry|walnut|hickory|elm|birch|ash|poplar|pine|alder|"
+        r"beech|mahogany|qswo|pswo|qsw|wormy|rustic|brown\s*maple|hard\s*maple|"
+        r"soft\s*maple|white\s*oak|red\s*oak|sap\s*cherry|quarter|1/?4\s*sawn|"
+        r"rough\s*sawn|ruff\s*sawn|barnwood|cedar|poly|woodgrain|fabric|leather|"
+        r"paint|black|white\s*maple|grey\s*elm|gray\s*elm"
+        r")\b"
+    )
+    _WOOD_DROPDOWN_JUNK = re.compile(
+        r"(?i)^("
+        r"[\d$#+%.\-\"']+|"
+        r"and|or|the|with|also|add|option|species|stain|part|number|color|"
+        r"r\.?|combo|standard|premium|unf\.?|fin\.?|wood|tier"
+        r")$"
+    )
+
+    def list_species(self, vendor: Optional[str] = None) -> list[str]:
+        """
+        Distinct wood / option labels for the floor Wood dropdown.
+
+        Multi-wood price tiers ("Oak / Cherry / Maple") are split into
+        selectable single woods so staff can filter by one species across
+        every builder. Junk tokens (prices, %, page notes) are dropped.
+        """
+        with self._conn() as conn:
+            if vendor and vendor != "All":
+                rows = conn.execute(
+                    "SELECT DISTINCT species FROM pricebook "
+                    "WHERE species IS NOT NULL AND TRIM(species) != '' "
+                    "AND vendor = ?",
+                    (vendor,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT DISTINCT species FROM pricebook "
+                    "WHERE species IS NOT NULL AND TRIM(species) != ''"
+                ).fetchall()
+        atomic: set[str] = set()
+        for (raw,) in rows:
+            s = str(raw).strip()
+            if not s:
+                continue
+            # Prefer whole single-wood labels that already look clean
+            if " / " not in s and "/" not in s:
+                if self._is_wood_dropdown_label(s):
+                    atomic.add(s)
+                continue
+            # Split multi-wood tiers
+            parts = [p.strip() for p in re.split(r"\s*/\s*", s) if p.strip()]
+            for p in parts:
+                if self._is_wood_dropdown_label(p):
+                    atomic.add(p)
+        # Prefer Title Case for duplicates that only differ by case
+        by_low: dict[str, str] = {}
+        for p in atomic:
+            k = p.lower()
+            if k not in by_low or (p[0].isupper() and not by_low[k][0].isupper()):
+                by_low[k] = p
+        return sorted(by_low.values(), key=lambda x: x.lower())
+
+    def _is_wood_dropdown_label(self, p: str) -> bool:
+        if not p or len(p) < 2 or len(p) > 48:
+            return False
+        if re.fullmatch(r"\d+(\.\d+)?", p):
+            return False
+        if self._WOOD_DROPDOWN_JUNK.match(p.strip()):
+            return False
+        if re.search(r"[@$%]|\+\d|option:|stain part", p, re.I):
+            return False
+        # Must look like a wood / known option, not a SKU or note
+        if self._WOOD_DROPDOWN_RE.search(p):
+            return True
+        # Short title-case option labels (e.g. "Black", "Cedar")
+        if re.fullmatch(r"[A-Za-z][A-Za-z \-]{1,30}", p) and not re.search(
+            r"(?i)drawer|table|chair|desk|bench|unit|style|bedroom", p
+        ):
+            # Only keep if it has a wood-ish or color-ish word length
+            return bool(
+                re.search(
+                    r"(?i)oak|maple|cherry|walnut|hickory|elm|cedar|poly|black|"
+                    r"white|paint|fabric|leather|rustic|wormy|qswo",
+                    p,
+                )
+            )
+        return False
+
     def list_source_files(self) -> list[str]:
         with self._conn() as conn:
             rows = conn.execute(
@@ -294,6 +382,7 @@ class PriceBookRepository:
         collection: Optional[str] = None,
         vendor: Optional[str] = None,
         finish_state: Optional[str] = None,
+        species: Optional[str] = None,
         limit: int = DEFAULT_SEARCH_LIMIT,
     ) -> pd.DataFrame:
         """
@@ -304,6 +393,9 @@ class PriceBookRepository:
 
         Each term matches if found in any field: part #, description, collection,
         builder, wood/option, dimensions, finish, notes, source file, prices.
+
+        species: exact match, or multi-wood tier containing that wood
+        (e.g. filter "Cherry" matches "Elm / Cherry / Maple / QSWO").
 
         Ranking (best first):
           1. Exact part_number match
@@ -337,6 +429,26 @@ class PriceBookRepository:
         if finish_state and finish_state.lower() in ("finished", "unfinished", "glazed"):
             clauses.append("finish_state = ?")
             params.append(finish_state.lower())
+        if species and species != "All":
+            # Exact tier/label, or multi-wood tier that includes this wood as a token
+            sp = species.strip()
+            clauses.append(
+                "("
+                "trim(coalesce(species,'')) = ? OR "
+                "trim(coalesce(species,'')) LIKE ? ESCAPE '\\' OR "
+                "trim(coalesce(species,'')) LIKE ? ESCAPE '\\' OR "
+                "trim(coalesce(species,'')) LIKE ? ESCAPE '\\'"
+                ")"
+            )
+            esc = self._like_escape(sp)
+            params.extend(
+                [
+                    sp,
+                    esc + " / %",  # "Cherry / …"
+                    "% / " + esc + " / %",  # "… / Cherry / …"
+                    "% / " + esc,  # "… / Cherry"
+                ]
+            )
 
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         cols = ", ".join(SELECT_COLS)

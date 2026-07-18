@@ -393,14 +393,31 @@ with tab_search:
             rest = [v for v in all_vendors if v not in favorites]
             vendors = ["All"] + favorites + rest
 
-        f1, f2, f3 = st.columns([1.6, 1.0, 0.9])
+        f1, f2, f3, f4 = st.columns([1.45, 1.25, 0.95, 0.85])
         with f1:
             vf = st.selectbox("Builder", vendors, key="sv")
         with f2:
+            # Wood — one selectable species for any builder (tiers expand into atoms)
+            wood_src = None if vf == "All" else vf
+            try:
+                wood_list = svc.list_species(vendor=wood_src)
+            except Exception:
+                wood_list = []
+            wood_opts = ["All"] + wood_list
+            if st.session_state.get("sw") not in wood_opts:
+                st.session_state["sw"] = "All"
+            wf = st.selectbox(
+                "Wood",
+                wood_opts,
+                key="sw",
+                help="Select one wood for any builder. Multi-wood price tiers "
+                "(Elm / Cherry / Maple) match when they include that wood.",
+            )
+        with f3:
             # Floor default: finished only
             finish_opts = ["finished", "All", "unfinished"]
             ff = st.selectbox("Finish", finish_opts, index=0, key="sf")
-        with f3:
+        with f4:
             st.write("")  # align with selectboxes
             st.write("")
             if vf != "All":
@@ -426,6 +443,7 @@ with tab_search:
                     vendor=None if vf == "All" else vf,
                     collection=None,  # Collection filter hidden on floor UI
                     finish_state=None if ff == "All" else ff,
+                    species=None if wf == "All" else wf,
                     limit=DEFAULT_SEARCH_LIMIT,
                 )
                 empty_reason = "none" if results.empty else ""
@@ -434,6 +452,10 @@ with tab_search:
                 empty_reason = "error"
                 st.error(f"Search failed: {exc}")
         display = results.copy()
+        # With a wood filter, show that wood (not the full multi-wood tier string)
+        if not display.empty and wf and wf != "All" and "species" in display.columns:
+            display = display.copy()
+            display["species"] = wf
 
         # Floor table emphasizes RETAIL
         if display.empty:
@@ -484,11 +506,15 @@ with tab_search:
                     "description": "Description",
                     "vendor": "Builder",
                     "collection": "Collection",
-                    "species": "Wood / option",
+                    "species": "Wood",
                     "finish_state": "Finish",
                     "adjusted_price": "RETAIL",
                 }
             )
+            if wf and wf != "All":
+                st.caption(
+                    f"Wood filter: **{wf}** · multi-wood tiers that include this wood use the same retail price."
+                )
             # Content-based widths so headers + values fully show (scrolls if needed)
             st.dataframe(
                 view,
@@ -499,10 +525,12 @@ with tab_search:
                     money_cols={"RETAIL"},
                     number_formats={"RETAIL": "$%.0f"},
                     help_text={
-                        "RETAIL": "Customer price — wholesale × mult, rolled up to next even dollar"
+                        "RETAIL": "Customer price — wholesale × mult, rolled up to next even dollar",
+                        "Wood": "Wood species / option — use the Wood dropdown above to pick one",
                     },
                     overrides={
                         "Part #": 110,
+                        "Wood": 160,
                         "Finish": 100,
                         "RETAIL": 100,
                     },
