@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # Project root: parent of backend/
 APP_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = APP_DIR / "master_pricebook.db"
+
+# Local default: ./master_pricebook.db
+# Fly: set FAF_DB_PATH=/data/master_pricebook.db (volume mount)
+_env_db = (os.environ.get("FAF_DB_PATH") or os.environ.get("PRICEBOOK_DB_PATH") or "").strip()
+DB_PATH = Path(_env_db) if _env_db else (APP_DIR / "master_pricebook.db")
 
 DEFAULT_MULTIPLIER = 2.7
 DEFAULT_PRICE_BASIS = "wholesale"

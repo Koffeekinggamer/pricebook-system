@@ -68,17 +68,42 @@ password = "Amish"
 
 ---
 
-## Fly.io (Docker — same DB limitation)
+## Fly.io (full catalog on volume — works when Mac is closed)
+
+**Public app:** https://faf-pricebook.fly.dev  
+**Login:** Foothills / Amish (or set `FAF_APP_USER` / `FAF_APP_PASSWORD` secrets)
+
+| Piece | Detail |
+|-------|--------|
+| App | `faf-pricebook` · region `iad` |
+| Volume | `pricebook_data` → `/data` (3 GB) |
+| DB path | `/data/master_pricebook.db` (`FAF_DB_PATH`) |
+| Source of truth | Still the **Mac** DB; push a copy to Fly after big updates |
+
+### First-time / redeploy
 
 ```bash
 export PATH="$HOME/.fly/bin:$PATH"
-fly auth login
 cd ~/FAF-pricebook
+fly auth login   # if needed
+
+# Volume (once): created automatically on deploy if missing, or:
+# fly volumes create pricebook_data --region iad --size 3 -a faf-pricebook
+
+fly secrets set FAF_APP_USER=Foothills FAF_APP_PASSWORD=Amish -a faf-pricebook
 fly deploy -a faf-pricebook
+
+# Upload full catalog from this Mac
+./scripts/push_db_to_fly.sh
 ```
 
-App name in `fly.toml`: `faf-pricebook`.  
-Without mounting/uploading `master_pricebook.db`, the Fly app will not match the floor Mac.
+### After Viztech import / cleanup on the Mac
+
+```bash
+./scripts/push_db_to_fly.sh
+```
+
+SQLite + Fly: **one machine** (volume attaches to a single VM). `min_machines_running = 1` keeps it warm.
 
 ---
 
