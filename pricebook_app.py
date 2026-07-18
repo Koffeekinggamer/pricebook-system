@@ -127,31 +127,20 @@ def get_service() -> PriceBookService:
     return svc
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def _wood_dropdown_options(vendor_key: str) -> list:
-    """Cached wood list for the Search Wood selectbox (never empty)."""
+    """
+    Woods for the Search dropdown, scoped to the selected builder.
+
+    Builder = All → woods across the whole book.
+    Specific builder → only species that appear in that builder's rows.
+    """
     svc = get_service()
     v = None if not vendor_key or vendor_key == "All" else vendor_key
     try:
         woods = list(svc.list_species(vendor=v) or [])
     except Exception:
         woods = []
-    # Guaranteed baseline so the dropdown always populates
-    if not woods:
-        woods = [
-            "Oak",
-            "Red Oak",
-            "White Oak",
-            "Brown Maple",
-            "Hard Maple",
-            "Cherry",
-            "Walnut",
-            "Hickory",
-            "Elm",
-            "QSWO",
-            "Rustic Cherry",
-            "Wormy Maple",
-        ]
     return woods
 
 
@@ -425,19 +414,21 @@ with tab_search:
         with f1:
             vf = st.selectbox("Builder", vendors, key="sv")
         with f2:
-            # Wood — selectable species for every builder (cached; always has options)
+            # Wood — only species used by the selected builder (or whole book if All)
             wood_list = _wood_dropdown_options(vf if vf else "All")
             wood_opts = ["All"] + [w for w in wood_list if w and w != "All"]
-            # Keep session value valid for this option set (before widget binds)
+            # Keep session value valid when Builder changes
             if "sw" in st.session_state and st.session_state["sw"] not in wood_opts:
                 st.session_state["sw"] = "All"
             wf = st.selectbox(
                 "Wood",
                 options=wood_opts,
                 key="sw",
-                help="Select one wood for any builder. Multi-wood price tiers "
-                "(Elm / Cherry / Maple) match when they include that wood.",
+                help="Only woods available for the selected builder. "
+                "Multi-wood price tiers match if they include the wood you pick.",
             )
+            if vf != "All" and len(wood_opts) <= 1:
+                st.caption("No wood options parsed for this builder.")
         with f3:
             # Floor default: finished only
             finish_opts = ["finished", "All", "unfinished"]

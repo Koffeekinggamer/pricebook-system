@@ -137,15 +137,15 @@ class PriceBookRepository:
         """
         Distinct wood / option labels for the floor Wood dropdown.
 
-        Multi-wood price tiers ("Oak / Cherry / Maple") are split into
-        selectable single woods so staff can filter by one species across
-        every builder. Always includes a core wood list so the dropdown
-        is never empty.
+        When *vendor* is set, only woods that appear in that builder's
+        catalog are returned (multi-wood tiers are split into atoms).
+        When vendor is All/None, woods are collected across all builders.
         """
-        atomic: set[str] = set(self._CORE_WOODS)
+        scoped = bool(vendor and vendor not in ("All", "", None))
+        atomic: set[str] = set()
         try:
             with self._conn() as conn:
-                if vendor and vendor not in ("All", "", None):
+                if scoped:
                     rows = conn.execute(
                         "SELECT DISTINCT species FROM pricebook "
                         "WHERE species IS NOT NULL AND TRIM(species) != '' "
@@ -170,8 +170,12 @@ class PriceBookRepository:
                     if self._is_wood_dropdown_label(p):
                         atomic.add(p)
         except Exception:
-            # Still return core woods so the UI dropdown never fails closed
-            pass
+            if not scoped:
+                atomic.update(self._CORE_WOODS)
+
+        # All-builders only: seed common woods if DB parse was empty
+        if not scoped and not atomic:
+            atomic.update(self._CORE_WOODS)
 
         # Prefer Title Case for duplicates that only differ by case
         by_low: dict[str, str] = {}
