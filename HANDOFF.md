@@ -19,9 +19,9 @@ streamlit run pricebook_app.py --server.port 8501
 ```
 
 Autostart LaunchAgents may already be running Streamlit on **8501**.  
-Public quick-tunnel (changes when tunnel restarts): see  
-`~/Documents/FAF-pricebook-backups/CURRENT_PUBLIC_URL.txt`  
-Last known: `https://restoration-manual-antibody-premier.trycloudflare.com`
+**Online (Mac can be closed):** https://faf-pricebook.fly.dev · Login Foothills / Amish  
+Refresh Fly after local catalog updates: `./scripts/push_db_to_fly.sh`  
+Mac tunnel (optional): `~/Documents/FAF-pricebook-backups/CURRENT_PUBLIC_URL.txt`
 
 **Live DB (gitignored):** `~/FAF-pricebook/master_pricebook.db`  
 **As of 2026-07-18 (finish pass):** ~**390,509 rows · 181 vendors · 3,459 collections · 165 phones**  
