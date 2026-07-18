@@ -149,7 +149,7 @@ Many local changes **not pushed** (and DB never goes to GitHub):
 ## Known issues / next work
 
 ### High value
-1. **Still-fail Viztech imports — FIXED (2026-07-18):** Deep header scan, desc-as-id, multi name|price catalogs, HW Chair markup calculator, `_to_float` no longer eats `1/4 Sawn`. Recovered **16/16** remaining builders (E&I 4850, L&N 4455, Interior 3990, Outdoor Retreat 5125, E&S 4448, HW Chair 535, …). Report: `~/Documents/viztech-downloads/still_fail_import_report.json`. A few catalogs remain thin (Amish Aspen ~16 rows, Hoosier Home ~32).
+1. **Still-fail Viztech imports — FIXED (2026-07-18):** Deep header scan, desc-as-id, multi name|price catalogs, HW Chair markup calculator, `_to_float` no longer eats `1/4 Sawn`. Recovered **16/16** remaining builders (E&I 4850, L&N 4455, Interior 3990, Outdoor Retreat 5125, E&S 4448, HW Chair 535, …). Report: `~/Documents/viztech-downloads/still_fail_import_report.json`. A few catalogs remain thin (Amish Aspen ~16, Hillside Chair ~5, Maple Lane ~6). **Green Meadows** and **Simple Living** (PDF-only) are **deleted + ignored** — `IGNORE_BUILDERS` in `scripts/viztech_sync.py`.
 2. **Phones:** **153/181** vendors have phone numbers (HQ spam cleared; scrape filled most). Rest for floor entry.
 3. **Git not synced** — large uncommitted UI/backend/sync/import work (commit product code, never DB/secrets).
 4. **Cloud/Fly deploy** may still have **old small DB** if anyone uses a hosted deploy; authoritative catalog is **local** `master_pricebook.db`. Streamlit Cloud does not get the private DB automatically.

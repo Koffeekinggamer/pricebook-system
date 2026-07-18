@@ -66,6 +66,34 @@ SAME_COMPANY = {
     "lamb woodworking": "LAMB",
 }
 
+# Builders we do not want in the book (PDF-only / not needed on floor).
+# Match on Viztech slug or display title (normalized: lower, &→and, non-alnum → space).
+IGNORE_BUILDERS = {
+    "green meadows",
+    "green-meadows",
+    "simple living",
+    "simple-living",
+}
+
+
+def _norm_builder_key(s: str) -> str:
+    s = (s or "").lower().replace("&", "and")
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def is_ignored_builder(*, slug: str = "", title: str = "", vendor: str = "") -> bool:
+    for raw in (slug, title, vendor):
+        key = _norm_builder_key(raw)
+        if not key:
+            continue
+        if key in IGNORE_BUILDERS:
+            return True
+        # hyphen form of multi-word keys
+        if key.replace(" ", "-") in IGNORE_BUILDERS:
+            return True
+    return False
+
 
 def log(msg: str) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -288,7 +316,11 @@ def download_catalog(
     out_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict] = []
     jobs: list[dict] = []
+    ignored = 0
     for c in catalog:
+        if is_ignored_builder(slug=c.get("slug") or "", title=c.get("title") or ""):
+            ignored += 1
+            continue
         for i, f in enumerate(c.get("files") or []):
             jobs.append(
                 {
@@ -299,6 +331,8 @@ def download_catalog(
                     "idx": i,
                 }
             )
+    if ignored:
+        log(f"Ignored {ignored} builders (IGNORE_BUILDERS)")
     log(f"Download jobs: {len(jobs)}")
 
     for n, job in enumerate(jobs, 1):
@@ -465,6 +499,9 @@ def import_folder(out_dir: Path) -> dict[str, Any]:
         if not d.is_dir():
             continue
         vendor = vendor_from_folder(d.name)
+        if is_ignored_builder(vendor=vendor, title=d.name, slug=d.name):
+            log(f"  ignore builder folder: {d.name}")
+            continue
         files = [
             p
             for p in d.rglob("*")
