@@ -2058,7 +2058,7 @@ with tab_vendors:
             "(or whatever deal you run). **Phone** is next to each builder for the floor."
         )
 
-        b1, b2, b3 = st.columns([1.4, 1.0, 1.0])
+        b1, b2 = st.columns([1.6, 1.0])
         with b1:
             if st.button(
                 "Save phone & multipliers · update retail",
@@ -2094,17 +2094,6 @@ with tab_vendors:
                     svc.reapply_multiplier(2.7, vendor=v)
                 st.success("All builders set to 2.7")
                 st.rerun()
-        with b3:
-            if st.button("Genuine Oak → 1.7", use_container_width=True):
-                if "Genuine Oak" in svc.list_vendors():
-                    svc.set_vendor_multiplier(
-                        "Genuine Oak", 1.7, notes="Typical Genuine Oak deal"
-                    )
-                    n = svc.reapply_multiplier(1.7, vendor="Genuine Oak")
-                    st.success(f"Genuine Oak → 1.7 ({n:,} rows)")
-                    st.rerun()
-                else:
-                    st.warning("Genuine Oak not in master.")
 
         # Example: show one SKU before/after for selected builder
         st.markdown("##### Check a price after mult change")
