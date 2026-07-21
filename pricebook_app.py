@@ -28,7 +28,11 @@ if str(APP_DIR) not in sys.path:
 _FAVICON = APP_DIR / "assets" / "favicon.png"
 _LOGO = APP_DIR / "assets" / "logo.png"
 
+# Feature flags — content-accuracy phase (set True to restore quoting later)
+SHOW_ORDERTRAC_QUOTE = False
+
 st.set_page_config(
+
     page_title="FAF Price Book",
     page_icon=str(_FAVICON) if _FAVICON.is_file() else "🪵",
     layout="wide",
@@ -88,7 +92,7 @@ def _require_login() -> bool:
           <div style="font-size:2rem;font-weight:700;color:#2d4a30;">FAF Price Book</div>
           <div style="color:#555;margin-top:0.25rem;">Foothills Amish Furniture · sign in to continue</div>
           <div style="color:#888;margin-top:0.5rem;font-size:0.9rem;">
-            Use your FAF username (OrderTrac staff accounts after Admin sync)
+            Use your FAF floor login
           </div>
         </div>
         """,
@@ -427,7 +431,8 @@ st.sidebar.metric("Master rows", f"{stats['rows']:,}")
 st.sidebar.caption(
     f"{stats['vendors']} vendors · {stats['collections']} collections"
 )
-_quote_sidebar_badge()
+if SHOW_ORDERTRAC_QUOTE:
+    _quote_sidebar_badge()
 # Viztech sync status lives under Admin only (hidden from floor sidebar)
 
 # ---------------------------------------------------------------------------
@@ -446,19 +451,35 @@ with d3:
         unsafe_allow_html=True,
     )
 
+st.info(
+    "**Content accuracy mode** — quoting & OrderTrac are hidden. "
+    "Use **Search**, **Drop files**, and **Vendors** to verify and rebuild the catalog."
+)
+
 # ===========================================================================
 # TABS
 # ===========================================================================
 
-tab_search, tab_quote, tab_import, tab_vendors, tab_admin = st.tabs(
-    [
-        "Search",
-        "OrderTrac quote",
-        "Drop files",
-        "Vendors",
-        "Admin",
-    ]
-)
+if SHOW_ORDERTRAC_QUOTE:
+    tab_search, tab_quote, tab_import, tab_vendors, tab_admin = st.tabs(
+        [
+            "Search",
+            "OrderTrac quote",
+            "Drop files",
+            "Vendors",
+            "Admin",
+        ]
+    )
+else:
+    tab_search, tab_import, tab_vendors, tab_admin = st.tabs(
+        [
+            "Search",
+            "Drop files",
+            "Vendors",
+            "Admin",
+        ]
+    )
+    tab_quote = None
 
 # ---------------------------------------------------------------------------
 # SEARCH
@@ -660,93 +681,93 @@ with tab_search:
                 height=480,
             )
 
-            # ---- Add FAF selection → OrderTrac quote cart ----
-            if "id" in results.columns and not results.empty:
-                st.markdown("##### Add to OrderTrac quote (from FAF price)")
-                st.caption(
-                    "Selections come from **this FAF price book** (retail = wholesale × mult). "
-                    "Build the cart here, then open **OrderTrac quote** tab → "
-                    "**Create OrderTrac quote**."
-                )
-                labels = []
-                id_by_label = {}
-                for _, r in results.head(80).iterrows():
-                    rid = int(r["id"])
-                    part = str(r.get("part_number") or "")[:28]
-                    desc = str(r.get("description") or "")[:36]
-                    retail = float(r.get("adjusted_price") or 0)
-                    lab = f"#{rid} · {part} · ${retail:,.0f} · {desc}"
-                    labels.append(lab)
-                    id_by_label[lab] = rid
-                aq1, aq2, aq3, aq4 = st.columns([3.2, 0.8, 1.4, 1.2])
-                with aq1:
-                    pick = st.selectbox(
-                        "FAF catalog line",
-                        labels,
-                        key="add_quote_pick",
-                        label_visibility="collapsed",
+            if SHOW_ORDERTRAC_QUOTE:
+                if "id" in results.columns and not results.empty:
+                    st.markdown("##### Add to OrderTrac quote (from FAF price)")
+                    st.caption(
+                        "Selections come from **this FAF price book** (retail = wholesale × mult). "
+                        "Build the cart here, then open **OrderTrac quote** tab → "
+                        "**Create OrderTrac quote**."
                     )
-                with aq2:
-                    add_qty = st.number_input(
-                        "Qty", min_value=0.5, value=1.0, step=1.0, key="add_quote_qty"
-                    )
-                with aq3:
-                    # Prefer quote defaults, then free type
-                    _def_stain = st.session_state.get(
-                        "quote_stain_default", "Michael's Cherry (OCS-113)"
-                    )
-                    add_stain = st.text_input(
-                        "Stain",
-                        value=_def_stain,
-                        key="add_quote_stain",
-                        placeholder="Stain name / OCS…",
-                    )
-                with aq4:
-                    st.write("")
-                    st.write("")
-                    if st.button(
-                        "Add from FAF → quote",
-                        type="primary",
-                        key="btn_add_to_quote",
-                        use_container_width=True,
-                    ):
-                        try:
-                            qid = _ensure_active_quote()
-                            rid = id_by_label[pick]
-                            # Prefer Search wood filter; else quote default wood
-                            wood_sel = (
-                                None
-                                if wf == "All"
-                                else wf
-                            ) or st.session_state.get("quote_wood_default")
-                            finish_sel = (
-                                None if ff == "All" else ff
-                            ) or st.session_state.get(
-                                "quote_finish_default", "finished"
-                            )
-                            stain_sel = (add_stain or "").strip() or st.session_state.get(
-                                "quote_stain_default", ""
-                            )
-                            svc.add_quote_line_from_id(
-                                qid,
-                                rid,
-                                qty=float(add_qty),
-                                species_override=wood_sel,
-                                finish_override=finish_sel,
-                                stain=stain_sel,
-                            )
-                            if stain_sel:
-                                st.session_state["quote_stain_default"] = stain_sel
-                            if wood_sel:
-                                st.session_state["quote_wood_default"] = wood_sel
-                            qn = (svc.get_quote(qid) or {}).get("quote_number")
-                            st.success(
-                                f"Added FAF #{rid} → **{qn}** "
-                                f"({wood_sel or 'wood?'} / {stain_sel or 'stain?'})"
-                            )
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Could not add line: {exc}")
+                    labels = []
+                    id_by_label = {}
+                    for _, r in results.head(80).iterrows():
+                        rid = int(r["id"])
+                        part = str(r.get("part_number") or "")[:28]
+                        desc = str(r.get("description") or "")[:36]
+                        retail = float(r.get("adjusted_price") or 0)
+                        lab = f"#{rid} · {part} · ${retail:,.0f} · {desc}"
+                        labels.append(lab)
+                        id_by_label[lab] = rid
+                    aq1, aq2, aq3, aq4 = st.columns([3.2, 0.8, 1.4, 1.2])
+                    with aq1:
+                        pick = st.selectbox(
+                            "FAF catalog line",
+                            labels,
+                            key="add_quote_pick",
+                            label_visibility="collapsed",
+                        )
+                    with aq2:
+                        add_qty = st.number_input(
+                            "Qty", min_value=0.5, value=1.0, step=1.0, key="add_quote_qty"
+                        )
+                    with aq3:
+                        # Prefer quote defaults, then free type
+                        _def_stain = st.session_state.get(
+                            "quote_stain_default", "Michael's Cherry (OCS-113)"
+                        )
+                        add_stain = st.text_input(
+                            "Stain",
+                            value=_def_stain,
+                            key="add_quote_stain",
+                            placeholder="Stain name / OCS…",
+                        )
+                    with aq4:
+                        st.write("")
+                        st.write("")
+                        if st.button(
+                            "Add from FAF → quote",
+                            type="primary",
+                            key="btn_add_to_quote",
+                            use_container_width=True,
+                        ):
+                            try:
+                                qid = _ensure_active_quote()
+                                rid = id_by_label[pick]
+                                # Prefer Search wood filter; else quote default wood
+                                wood_sel = (
+                                    None
+                                    if wf == "All"
+                                    else wf
+                                ) or st.session_state.get("quote_wood_default")
+                                finish_sel = (
+                                    None if ff == "All" else ff
+                                ) or st.session_state.get(
+                                    "quote_finish_default", "finished"
+                                )
+                                stain_sel = (add_stain or "").strip() or st.session_state.get(
+                                    "quote_stain_default", ""
+                                )
+                                svc.add_quote_line_from_id(
+                                    qid,
+                                    rid,
+                                    qty=float(add_qty),
+                                    species_override=wood_sel,
+                                    finish_override=finish_sel,
+                                    stain=stain_sel,
+                                )
+                                if stain_sel:
+                                    st.session_state["quote_stain_default"] = stain_sel
+                                if wood_sel:
+                                    st.session_state["quote_wood_default"] = wood_sel
+                                qn = (svc.get_quote(qid) or {}).get("quote_number")
+                                st.success(
+                                    f"Added FAF #{rid} → **{qn}** "
+                                    f"({wood_sel or 'wood?'} / {stain_sel or 'stain?'})"
+                                )
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Could not add line: {exc}")
 
     # ---- Separate pinned-builders column (collapsible) ----
     if pin_col is not None:
@@ -786,758 +807,759 @@ with tab_search:
                     _save_favorites([])
                     st.rerun()
 
-# ---------------------------------------------------------------------------
-# ORDERTRAC QUOTE — FAF price book is source; OrderTrac is destination
-# ---------------------------------------------------------------------------
-with tab_quote:
-    st.subheader("OrderTrac quote (from FAF Price Book)")
-    st.markdown(
-        """
-**Flow:** **Search** FAF prices → **Add from FAF → quote** → review here →
-**Create OrderTrac quote** (type stays **Quote**, never a sale).
+if SHOW_ORDERTRAC_QUOTE and tab_quote is not None:
+    # ---------------------------------------------------------------------------
+    # ORDERTRAC QUOTE — FAF price book is source; OrderTrac is destination
+    # ---------------------------------------------------------------------------
+    with tab_quote:
+        st.subheader("OrderTrac quote (from FAF Price Book)")
+        st.markdown(
+            """
+    **Flow:** **Search** FAF prices → **Add from FAF → quote** → review here →
+    **Create OrderTrac quote** (type stays **Quote**, never a sale).
 
-Prices always come from the FAF master book (wholesale × mult). OrderTrac
-receives custom lines with FAF id, wood, stain, finish, and retail.
-"""
-    )
-
-    # ---- Quote picker / new ----
-    qlist = svc.list_quotes(limit=50)
-    q_options = ["— New FAF quote —"]
-    q_id_map = {"— New FAF quote —": None}
-    if qlist is not None and not qlist.empty:
-        for _, qr in qlist.iterrows():
-            ot_tag = ""
-            if qr.get("ordertrac_so_id"):
-                ot_tag = f" · OT #{qr.get('ordertrac_so_id')}"
-            lab = (
-                f"{qr.get('quote_number')} · "
-                f"{qr.get('customer_name') or '(no customer)'} · "
-                f"{int(qr.get('line_count') or 0)} lines · "
-                f"${float(qr.get('lines_subtotal') or 0):,.0f}{ot_tag}"
-            )
-            q_options.append(lab)
-            q_id_map[lab] = int(qr["id"])
-
-    active = st.session_state.get("active_quote_id")
-    default_ix = 0
-    if active:
-        for i, lab in enumerate(q_options):
-            if q_id_map.get(lab) == int(active):
-                default_ix = i
-                break
-
-    qc1, qc2, qc3 = st.columns([2.5, 1, 1])
-    with qc1:
-        q_pick = st.selectbox(
-            "FAF quote (staging for OrderTrac)",
-            q_options,
-            index=min(default_ix, len(q_options) - 1),
-            key="quote_open_pick",
+    Prices always come from the FAF master book (wholesale × mult). OrderTrac
+    receives custom lines with FAF id, wood, stain, finish, and retail.
+    """
         )
-    with qc2:
-        st.write("")
-        st.write("")
-        if st.button("Open / create", type="primary", use_container_width=True):
-            if q_pick == "— New FAF quote —" or q_id_map.get(q_pick) is None:
+
+        # ---- Quote picker / new ----
+        qlist = svc.list_quotes(limit=50)
+        q_options = ["— New FAF quote —"]
+        q_id_map = {"— New FAF quote —": None}
+        if qlist is not None and not qlist.empty:
+            for _, qr in qlist.iterrows():
+                ot_tag = ""
+                if qr.get("ordertrac_so_id"):
+                    ot_tag = f" · OT #{qr.get('ordertrac_so_id')}"
+                lab = (
+                    f"{qr.get('quote_number')} · "
+                    f"{qr.get('customer_name') or '(no customer)'} · "
+                    f"{int(qr.get('line_count') or 0)} lines · "
+                    f"${float(qr.get('lines_subtotal') or 0):,.0f}{ot_tag}"
+                )
+                q_options.append(lab)
+                q_id_map[lab] = int(qr["id"])
+
+        active = st.session_state.get("active_quote_id")
+        default_ix = 0
+        if active:
+            for i, lab in enumerate(q_options):
+                if q_id_map.get(lab) == int(active):
+                    default_ix = i
+                    break
+
+        qc1, qc2, qc3 = st.columns([2.5, 1, 1])
+        with qc1:
+            q_pick = st.selectbox(
+                "FAF quote (staging for OrderTrac)",
+                q_options,
+                index=min(default_ix, len(q_options) - 1),
+                key="quote_open_pick",
+            )
+        with qc2:
+            st.write("")
+            st.write("")
+            if st.button("Open / create", type="primary", use_container_width=True):
+                if q_pick == "— New FAF quote —" or q_id_map.get(q_pick) is None:
+                    st.session_state["active_quote_id"] = svc.create_quote(
+                        notes="FAF Price Book → OrderTrac quote"
+                    )
+                else:
+                    st.session_state["active_quote_id"] = q_id_map[q_pick]
+                st.rerun()
+        with qc3:
+            st.write("")
+            st.write("")
+            if st.button("New blank quote", use_container_width=True):
                 st.session_state["active_quote_id"] = svc.create_quote(
                     notes="FAF Price Book → OrderTrac quote"
                 )
-            else:
-                st.session_state["active_quote_id"] = q_id_map[q_pick]
-            st.rerun()
-    with qc3:
-        st.write("")
-        st.write("")
-        if st.button("New blank quote", use_container_width=True):
-            st.session_state["active_quote_id"] = svc.create_quote(
-                notes="FAF Price Book → OrderTrac quote"
-            )
-            st.rerun()
+                st.rerun()
 
-    qid = st.session_state.get("active_quote_id")
-    if not qid:
-        st.info(
-            "1) Create a quote · 2) **Search** tab → **Add from FAF → quote** · "
-            "3) Come back here → **Create OrderTrac quote**."
-        )
-    else:
-        quote = svc.get_quote(int(qid))
-        if not quote:
-            st.warning("Quote not found — create a new one.")
-            st.session_state.pop("active_quote_id", None)
+        qid = st.session_state.get("active_quote_id")
+        if not qid:
+            st.info(
+                "1) Create a quote · 2) **Search** tab → **Add from FAF → quote** · "
+                "3) Come back here → **Create OrderTrac quote**."
+            )
         else:
-            # OrderTrac link banner
-            if quote.get("ordertrac_url") or quote.get("ordertrac_so_id"):
-                so = quote.get("ordertrac_so_id") or "—"
-                st.success(
-                    f"Linked to OrderTrac **QUOTE #{so}** · "
-                    f"pushed {quote.get('ordertrac_pushed_at') or '—'}"
+            quote = svc.get_quote(int(qid))
+            if not quote:
+                st.warning("Quote not found — create a new one.")
+                st.session_state.pop("active_quote_id", None)
+            else:
+                # OrderTrac link banner
+                if quote.get("ordertrac_url") or quote.get("ordertrac_so_id"):
+                    so = quote.get("ordertrac_so_id") or "—"
+                    st.success(
+                        f"Linked to OrderTrac **QUOTE #{so}** · "
+                        f"pushed {quote.get('ordertrac_pushed_at') or '—'}"
+                    )
+                    if quote.get("ordertrac_url"):
+                        st.markdown(
+                            f"[Open this quote in OrderTrac]({quote['ordertrac_url']})"
+                        )
+
+                # ---- Customer / header ----
+                st.markdown(
+                    f"##### FAF {quote.get('quote_number')} · `{quote.get('status')}` "
+                    f"→ OrderTrac destination"
                 )
-                if quote.get("ordertrac_url"):
-                    st.markdown(
-                        f"[Open this quote in OrderTrac]({quote['ordertrac_url']})"
+                h1, h2 = st.columns(2)
+                with h1:
+                    cust = st.text_input(
+                        "Customer name",
+                        value=quote.get("customer_name") or "",
+                        key=f"q_cust_{qid}",
+                    )
+                    phone = st.text_input(
+                        "Phone",
+                        value=quote.get("customer_phone") or "",
+                        key=f"q_phone_{qid}",
+                    )
+                    email = st.text_input(
+                        "Email",
+                        value=quote.get("customer_email") or "",
+                        key=f"q_email_{qid}",
+                    )
+                with h2:
+                    notes = st.text_area(
+                        "Notes",
+                        value=quote.get("notes") or "",
+                        height=100,
+                        key=f"q_notes_{qid}",
+                    )
+                    d1, d2 = st.columns(2)
+                    with d1:
+                        disc = st.number_input(
+                            "Discount %",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=float(quote.get("discount_pct") or 0),
+                            step=1.0,
+                            key=f"q_disc_{qid}",
+                        )
+                    with d2:
+                        tax = st.number_input(
+                            "Tax %",
+                            min_value=0.0,
+                            max_value=20.0,
+                            value=float(quote.get("tax_pct") or 0),
+                            step=0.25,
+                            key=f"q_tax_{qid}",
+                        )
+
+                # ---- Adjustable wood / stain (apply to quote + lines) ----
+                st.markdown("##### Wood & stain (adjustable)")
+                st.caption(
+                    "Change these anytime. Use **Apply to all lines** so every cart line "
+                    "and OrderTrac push use the same wood/stain."
+                )
+                # Common woods from catalog + free entry
+                try:
+                    _woods = list(svc.list_species(vendor=None) or [])
+                except Exception:
+                    _woods = []
+                _core_woods = [
+                    "Red Oak",
+                    "QSWO",
+                    "White Oak",
+                    "Brown Maple",
+                    "Cherry",
+                    "Hickory",
+                    "Walnut",
+                    "Soft Maple",
+                    "Hard Maple",
+                    "Rustic Cherry",
+                    "Wormy Maple",
+                ]
+                wood_choices = []
+                for w in _core_woods + _woods:
+                    if w and w not in wood_choices:
+                        wood_choices.append(w)
+                if "Other / type below…" not in wood_choices:
+                    wood_choices.append("Other / type below…")
+
+                _common_stains = [
+                    "Michael's Cherry (OCS-113)",
+                    "Asbury (OCS-111)",
+                    "Espresso (OCS-228)",
+                    "Washington (OCS-109)",
+                    "S-2 (OCS-104)",
+                    "Natural",
+                    "Clear",
+                    "Custom / type below…",
+                ]
+
+                # Session defaults (do not pass value= with key= — breaks editing)
+                if "quote_wood_default" not in st.session_state:
+                    st.session_state["quote_wood_default"] = "Red Oak"
+                if "quote_stain_default" not in st.session_state:
+                    st.session_state["quote_stain_default"] = "Michael's Cherry (OCS-113)"
+
+                cur_wood = st.session_state["quote_wood_default"]
+                wood_ix = (
+                    wood_choices.index(cur_wood)
+                    if cur_wood in wood_choices
+                    else len(wood_choices) - 1
+                )
+                cur_stain = st.session_state["quote_stain_default"]
+                stain_ix = (
+                    _common_stains.index(cur_stain)
+                    if cur_stain in _common_stains
+                    else len(_common_stains) - 1
+                )
+
+                wcol1, wcol2 = st.columns(2)
+                with wcol1:
+                    wood_pick = st.selectbox(
+                        "Wood",
+                        wood_choices,
+                        index=wood_ix,
+                        key=f"q_wood_pick_{qid}",
+                    )
+                    if wood_pick == "Other / type below…":
+                        wood_default = st.text_input(
+                            "Custom wood",
+                            key=f"q_wood_custom_{qid}",
+                            placeholder="Type wood species…",
+                        )
+                    else:
+                        wood_default = wood_pick
+                with wcol2:
+                    stain_pick = st.selectbox(
+                        "Stain",
+                        _common_stains,
+                        index=stain_ix,
+                        key=f"q_stain_pick_{qid}",
+                    )
+                    if stain_pick == "Custom / type below…":
+                        stain_default = st.text_input(
+                            "Custom stain",
+                            key=f"q_stain_custom_{qid}",
+                            placeholder="Type stain name / OCS code…",
+                        )
+                    else:
+                        stain_default = stain_pick
+
+                wood_default = (wood_default or "").strip()
+                stain_default = (stain_default or "").strip()
+                if wood_default:
+                    st.session_state["quote_wood_default"] = wood_default
+                if stain_default:
+                    st.session_state["quote_stain_default"] = stain_default
+
+                finish_default = st.selectbox(
+                    "Finish",
+                    ["finished", "unfinished"],
+                    index=0
+                    if st.session_state.get("quote_finish_default", "finished")
+                    == "finished"
+                    else 1,
+                    key=f"q_finish_{qid}",
+                )
+                st.session_state["quote_finish_default"] = finish_default
+
+                hs1, hs2, hs3 = st.columns(3)
+                with hs1:
+                    if st.button("Save customer / rates", key=f"q_save_hdr_{qid}"):
+                        note_out = (notes or "").strip()
+                        # Replace existing Wood/Stain lines or append
+                        import re as _re
+
+                        note_out = _re.sub(
+                            r"(?im)^Wood:.*$", "", note_out
+                        ).strip()
+                        note_out = _re.sub(
+                            r"(?im)^Stain:.*$", "", note_out
+                        ).strip()
+                        note_out = _re.sub(
+                            r"(?im)^Finish:.*$", "", note_out
+                        ).strip()
+                        spec_lines = []
+                        if wood_default:
+                            spec_lines.append(f"Wood: {wood_default}")
+                        if stain_default:
+                            spec_lines.append(f"Stain: {stain_default}")
+                        if finish_default:
+                            spec_lines.append(f"Finish: {finish_default}")
+                        if spec_lines:
+                            note_out = (note_out + "\n" + "\n".join(spec_lines)).strip()
+                        svc.update_quote(
+                            int(qid),
+                            customer_name=cust.strip(),
+                            customer_phone=phone.strip(),
+                            customer_email=email.strip(),
+                            notes=note_out,
+                            discount_pct=float(disc),
+                            tax_pct=float(tax),
+                        )
+                        st.success("Quote header saved (including wood/stain).")
+                        st.rerun()
+                with hs2:
+                    if st.button(
+                        "Apply wood/stain to all lines",
+                        type="primary",
+                        key=f"q_apply_ws_{qid}",
+                        help="Update every line's wood, finish, and stain",
+                    ):
+                        try:
+                            import re as _re
+
+                            _lines = svc.quote_lines(int(qid))
+                            n_upd = 0
+                            for _, lr in _lines.iterrows():
+                                lid = int(lr["id"])
+                                old_notes = str(lr.get("notes") or "")
+                                cleaned = _re.sub(
+                                    r"(?i)\s*Stain:\s*[^·|\n]*", "", old_notes
+                                ).strip(" ·|\n")
+                                new_notes = (
+                                    f"{cleaned} · Stain: {stain_default}".strip(" ·")
+                                    if stain_default and cleaned
+                                    else (
+                                        f"Stain: {stain_default}"
+                                        if stain_default
+                                        else cleaned
+                                    )
+                                )
+                                svc.update_quote_line(
+                                    lid,
+                                    species=wood_default or lr.get("species"),
+                                    finish_state=finish_default
+                                    or lr.get("finish_state"),
+                                    notes=new_notes,
+                                )
+                                n_upd += 1
+                            # Keep header notes in sync
+                            note_out = (notes or "").strip()
+                            note_out = _re.sub(r"(?im)^Wood:.*$", "", note_out).strip()
+                            note_out = _re.sub(r"(?im)^Stain:.*$", "", note_out).strip()
+                            note_out = _re.sub(r"(?im)^Finish:.*$", "", note_out).strip()
+                            bits = []
+                            if wood_default:
+                                bits.append(f"Wood: {wood_default}")
+                            if stain_default:
+                                bits.append(f"Stain: {stain_default}")
+                            if finish_default:
+                                bits.append(f"Finish: {finish_default}")
+                            if bits:
+                                note_out = (note_out + "\n" + "\n".join(bits)).strip()
+                            svc.update_quote(
+                                int(qid),
+                                notes=note_out,
+                                customer_name=cust.strip(),
+                                customer_phone=phone.strip(),
+                                customer_email=email.strip(),
+                                discount_pct=float(disc),
+                                tax_pct=float(tax),
+                            )
+                            st.success(
+                                f"Applied **{wood_default}** / **{stain_default}** / "
+                                f"**{finish_default}** to {n_upd} line(s)."
+                            )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+                with hs3:
+                    st.caption(
+                        f"Active: **{wood_default or '—'}** · "
+                        f"**{stain_default or '—'}** · **{finish_default}**"
                     )
 
-            # ---- Customer / header ----
-            st.markdown(
-                f"##### FAF {quote.get('quote_number')} · `{quote.get('status')}` "
-                f"→ OrderTrac destination"
-            )
-            h1, h2 = st.columns(2)
-            with h1:
-                cust = st.text_input(
-                    "Customer name",
-                    value=quote.get("customer_name") or "",
-                    key=f"q_cust_{qid}",
-                )
-                phone = st.text_input(
-                    "Phone",
-                    value=quote.get("customer_phone") or "",
-                    key=f"q_phone_{qid}",
-                )
-                email = st.text_input(
-                    "Email",
-                    value=quote.get("customer_email") or "",
-                    key=f"q_email_{qid}",
-                )
-            with h2:
-                notes = st.text_area(
-                    "Notes",
-                    value=quote.get("notes") or "",
-                    height=100,
-                    key=f"q_notes_{qid}",
-                )
-                d1, d2 = st.columns(2)
-                with d1:
-                    disc = st.number_input(
-                        "Discount %",
-                        min_value=0.0,
-                        max_value=100.0,
-                        value=float(quote.get("discount_pct") or 0),
-                        step=1.0,
-                        key=f"q_disc_{qid}",
-                    )
-                with d2:
-                    tax = st.number_input(
-                        "Tax %",
-                        min_value=0.0,
-                        max_value=20.0,
-                        value=float(quote.get("tax_pct") or 0),
-                        step=0.25,
-                        key=f"q_tax_{qid}",
-                    )
+                # ---- Lines ----
+                lines = svc.quote_lines(int(qid))
+                totals = svc.quote_totals(int(qid))
+                tcols = st.columns(4)
+                tcols[0].metric("Lines", totals.get("line_count", 0))
+                tcols[1].metric("Subtotal", f"${totals.get('subtotal', 0):,.2f}")
+                tcols[2].metric("Tax", f"${totals.get('tax_amount', 0):,.2f}")
+                tcols[3].metric("**TOTAL**", f"${totals.get('grand_total', 0):,.2f}")
 
-            # ---- Adjustable wood / stain (apply to quote + lines) ----
-            st.markdown("##### Wood & stain (adjustable)")
-            st.caption(
-                "Change these anytime. Use **Apply to all lines** so every cart line "
-                "and OrderTrac push use the same wood/stain."
-            )
-            # Common woods from catalog + free entry
-            try:
-                _woods = list(svc.list_species(vendor=None) or [])
-            except Exception:
-                _woods = []
-            _core_woods = [
-                "Red Oak",
-                "QSWO",
-                "White Oak",
-                "Brown Maple",
-                "Cherry",
-                "Hickory",
-                "Walnut",
-                "Soft Maple",
-                "Hard Maple",
-                "Rustic Cherry",
-                "Wormy Maple",
-            ]
-            wood_choices = []
-            for w in _core_woods + _woods:
-                if w and w not in wood_choices:
-                    wood_choices.append(w)
-            if "Other / type below…" not in wood_choices:
-                wood_choices.append("Other / type below…")
-
-            _common_stains = [
-                "Michael's Cherry (OCS-113)",
-                "Asbury (OCS-111)",
-                "Espresso (OCS-228)",
-                "Washington (OCS-109)",
-                "S-2 (OCS-104)",
-                "Natural",
-                "Clear",
-                "Custom / type below…",
-            ]
-
-            # Session defaults (do not pass value= with key= — breaks editing)
-            if "quote_wood_default" not in st.session_state:
-                st.session_state["quote_wood_default"] = "Red Oak"
-            if "quote_stain_default" not in st.session_state:
-                st.session_state["quote_stain_default"] = "Michael's Cherry (OCS-113)"
-
-            cur_wood = st.session_state["quote_wood_default"]
-            wood_ix = (
-                wood_choices.index(cur_wood)
-                if cur_wood in wood_choices
-                else len(wood_choices) - 1
-            )
-            cur_stain = st.session_state["quote_stain_default"]
-            stain_ix = (
-                _common_stains.index(cur_stain)
-                if cur_stain in _common_stains
-                else len(_common_stains) - 1
-            )
-
-            wcol1, wcol2 = st.columns(2)
-            with wcol1:
-                wood_pick = st.selectbox(
-                    "Wood",
-                    wood_choices,
-                    index=wood_ix,
-                    key=f"q_wood_pick_{qid}",
-                )
-                if wood_pick == "Other / type below…":
-                    wood_default = st.text_input(
-                        "Custom wood",
-                        key=f"q_wood_custom_{qid}",
-                        placeholder="Type wood species…",
+                if lines is None or lines.empty:
+                    st.info(
+                        "No FAF lines yet. Go to **Search**, pick a price, then "
+                        "**Add from FAF → quote**."
                     )
                 else:
-                    wood_default = wood_pick
-            with wcol2:
-                stain_pick = st.selectbox(
-                    "Stain",
-                    _common_stains,
-                    index=stain_ix,
-                    key=f"q_stain_pick_{qid}",
-                )
-                if stain_pick == "Custom / type below…":
-                    stain_default = st.text_input(
-                        "Custom stain",
-                        key=f"q_stain_custom_{qid}",
-                        placeholder="Type stain name / OCS code…",
+                    show = lines.copy()
+                    # Friendly columns
+                    keep = [
+                        c
+                        for c in [
+                            "id",
+                            "line_no",
+                            "qty",
+                            "part_number",
+                            "description",
+                            "vendor",
+                            "species",
+                            "finish_state",
+                            "unit_base",
+                            "unit_retail",
+                            "line_discount_pct",
+                            "line_total",
+                            "notes",
+                            "pricebook_id",
+                        ]
+                        if c in show.columns
+                    ]
+                    show = show[keep].rename(
+                        columns={
+                            "line_no": "#",
+                            "part_number": "Part #",
+                            "description": "Description",
+                            "vendor": "Builder",
+                            "species": "Wood",
+                            "finish_state": "Finish",
+                            "unit_base": "Wholesale",
+                            "unit_retail": "Retail each",
+                            "line_discount_pct": "Disc %",
+                            "line_total": "Line total",
+                            "pricebook_id": "FAF id",
+                        }
                     )
-                else:
-                    stain_default = stain_pick
+                    st.dataframe(
+                        show.drop(columns=["id"], errors="ignore"),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=min(420, 80 + 36 * len(show)),
+                    )
 
-            wood_default = (wood_default or "").strip()
-            stain_default = (stain_default or "").strip()
-            if wood_default:
-                st.session_state["quote_wood_default"] = wood_default
-            if stain_default:
-                st.session_state["quote_stain_default"] = stain_default
+                    # Edit one line
+                    with st.expander("Edit or remove a line"):
+                        line_ids = lines["id"].tolist()
+                        labels_l = []
+                        for _, r in lines.iterrows():
+                            labels_l.append(
+                                f"id {int(r['id'])} · {r.get('part_number') or ''} · "
+                                f"{r.get('species') or ''} · qty {r.get('qty')} · "
+                                f"${float(r.get('line_total') or 0):,.2f}"
+                            )
+                        lab_to_id = dict(zip(labels_l, line_ids))
+                        elab = st.selectbox("Line", labels_l, key=f"q_edit_line_{qid}")
+                        erow = lines[lines["id"] == lab_to_id[elab]].iloc[0]
+                        e1, e2, e3 = st.columns(3)
+                        with e1:
+                            eqty = st.number_input(
+                                "Qty",
+                                min_value=0.0,
+                                value=float(erow.get("qty") or 1),
+                                step=1.0,
+                                key=f"q_eqty_{qid}",
+                            )
+                        with e2:
+                            eretail = st.number_input(
+                                "Retail each",
+                                min_value=0.0,
+                                value=float(erow.get("unit_retail") or 0),
+                                step=1.0,
+                                key=f"q_eretail_{qid}",
+                            )
+                        with e3:
+                            edisc = st.number_input(
+                                "Line disc %",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=float(erow.get("line_discount_pct") or 0),
+                                step=1.0,
+                                key=f"q_edisc_{qid}",
+                            )
+                        e4, e5, e6 = st.columns(3)
+                        with e4:
+                            ewood = st.text_input(
+                                "Wood",
+                                value=str(erow.get("species") or ""),
+                                key=f"q_ewood_{qid}",
+                            )
+                        with e5:
+                            # extract stain from notes if present
+                            import re as _re
 
-            finish_default = st.selectbox(
-                "Finish",
-                ["finished", "unfinished"],
-                index=0
-                if st.session_state.get("quote_finish_default", "finished")
-                == "finished"
-                else 1,
-                key=f"q_finish_{qid}",
-            )
-            st.session_state["quote_finish_default"] = finish_default
+                            _sn = str(erow.get("notes") or "")
+                            _sm = _re.search(r"(?i)Stain:\s*([^·|\n]+)", _sn)
+                            _stain0 = (
+                                _sm.group(1).strip()
+                                if _sm
+                                else st.session_state.get("quote_stain_default", "")
+                            )
+                            estain = st.text_input(
+                                "Stain",
+                                value=_stain0,
+                                key=f"q_estain_{qid}",
+                            )
+                        with e6:
+                            efin = st.selectbox(
+                                "Finish",
+                                ["finished", "unfinished"],
+                                index=0
+                                if str(erow.get("finish_state") or "finished")
+                                == "finished"
+                                else 1,
+                                key=f"q_efin_{qid}",
+                            )
+                        b1, b2 = st.columns(2)
+                        with b1:
+                            if st.button("Update line", key=f"q_upd_line_{qid}"):
+                                nnotes = str(erow.get("notes") or "")
+                                nnotes = _re.sub(
+                                    r"(?i)\s*Stain:\s*[^·|\n]*", "", nnotes
+                                ).strip(" ·")
+                                if (estain or "").strip():
+                                    nnotes = (
+                                        f"{nnotes} · Stain: {estain.strip()}".strip(" ·")
+                                        if nnotes
+                                        else f"Stain: {estain.strip()}"
+                                    )
+                                svc.update_quote_line(
+                                    int(lab_to_id[elab]),
+                                    qty=float(eqty),
+                                    unit_retail=float(eretail),
+                                    line_discount_pct=float(edisc),
+                                    species=(ewood or "").strip() or erow.get("species"),
+                                    finish_state=efin,
+                                    notes=nnotes,
+                                )
+                                st.success("Line updated (qty, price, wood, stain, finish).")
+                                st.rerun()
+                        with b2:
+                            if st.button("Remove line", key=f"q_del_line_{qid}"):
+                                svc.delete_quote_line(int(lab_to_id[elab]))
+                                st.warning("Line removed.")
+                                st.rerun()
 
-            hs1, hs2, hs3 = st.columns(3)
-            with hs1:
-                if st.button("Save customer / rates", key=f"q_save_hdr_{qid}"):
-                    note_out = (notes or "").strip()
-                    # Replace existing Wood/Stain lines or append
-                    import re as _re
+                    # Custom line
+                    with st.expander("Add custom line (not in catalog)"):
+                        cdesc = st.text_input("Description", key=f"q_cdesc_{qid}")
+                        c2, c3, c4 = st.columns(3)
+                        with c2:
+                            cqty = st.number_input(
+                                "Qty", min_value=0.5, value=1.0, key=f"q_cqty_{qid}"
+                            )
+                        with c3:
+                            cprice = st.number_input(
+                                "Retail each", min_value=0.0, value=0.0, key=f"q_cprice_{qid}"
+                            )
+                        with c4:
+                            cvend = st.text_input("Builder", key=f"q_cvend_{qid}")
+                        if st.button("Add custom line", key=f"q_add_custom_{qid}"):
+                            if not cdesc.strip():
+                                st.error("Description required.")
+                            else:
+                                svc.add_custom_quote_line(
+                                    int(qid),
+                                    description=cdesc.strip(),
+                                    qty=float(cqty),
+                                    unit_retail=float(cprice),
+                                    vendor=cvend.strip(),
+                                )
+                                st.success("Custom line added.")
+                                st.rerun()
 
-                    note_out = _re.sub(
-                        r"(?im)^Wood:.*$", "", note_out
-                    ).strip()
-                    note_out = _re.sub(
-                        r"(?im)^Stain:.*$", "", note_out
-                    ).strip()
-                    note_out = _re.sub(
-                        r"(?im)^Finish:.*$", "", note_out
-                    ).strip()
-                    spec_lines = []
-                    if wood_default:
-                        spec_lines.append(f"Wood: {wood_default}")
-                    if stain_default:
-                        spec_lines.append(f"Stain: {stain_default}")
-                    if finish_default:
-                        spec_lines.append(f"Finish: {finish_default}")
-                    if spec_lines:
-                        note_out = (note_out + "\n" + "\n".join(spec_lines)).strip()
+                # ---- Primary: Create in OrderTrac ----
+                st.markdown("##### Create in OrderTrac")
+                st.caption(
+                    "This is the main action: FAF prices → new OrderTrac **Quote** "
+                    "(not a sale). Requires OrderTrac session "
+                    "(`python scripts/ordertrac_login.py` if expired)."
+                )
+                # Salesperson for OT SO User field
+                ot_user_opts = ["Miller, Judson"]
+                try:
+                    udf = svc.list_app_users(active_only=True)
+                    if (
+                        udf is not None
+                        and not udf.empty
+                        and "ordertrac_display_name" in udf.columns
+                    ):
+                        names = [
+                            x
+                            for x in udf["ordertrac_display_name"].dropna().tolist()
+                            if str(x).strip()
+                        ]
+                        if names:
+                            ot_user_opts = names
+                except Exception:
+                    pass
+                sess = st.session_state.get("auth_session") or {}
+                default_ot = sess.get("ordertrac_display_name") or ot_user_opts[0]
+                if default_ot not in ot_user_opts:
+                    ot_user_opts = [default_ot] + ot_user_opts
+                ot_ix = (
+                    ot_user_opts.index(default_ot) if default_ot in ot_user_opts else 0
+                )
+
+                otu1, otu2 = st.columns([2, 1])
+                with otu1:
+                    ot_user = st.selectbox(
+                        "OrderTrac sales user (on the quote)",
+                        ot_user_opts,
+                        index=ot_ix,
+                        key=f"q_ot_user_{qid}",
+                    )
+                with otu2:
+                    ot_loc = st.selectbox(
+                        "Location",
+                        ["Landrum", "Foothills Cabinets"],
+                        key=f"q_ot_loc_{qid}",
+                    )
+
+                has_lines = lines is not None and not lines.empty
+                linked = bool(quote.get("ordertrac_guid") or quote.get("ordertrac_so_id"))
+
+                def _save_header_and_push(mode: str):
                     svc.update_quote(
                         int(qid),
                         customer_name=cust.strip(),
                         customer_phone=phone.strip(),
                         customer_email=email.strip(),
-                        notes=note_out,
+                        notes=notes,
                         discount_pct=float(disc),
                         tax_pct=float(tax),
                     )
-                    st.success("Quote header saved (including wood/stain).")
-                    st.rerun()
-            with hs2:
-                if st.button(
-                    "Apply wood/stain to all lines",
-                    type="primary",
-                    key=f"q_apply_ws_{qid}",
-                    help="Update every line's wood, finish, and stain",
-                ):
+                    return svc.push_quote_to_ordertrac(
+                        int(qid),
+                        ot_user_display=ot_user,
+                        location=ot_loc,
+                        mode=mode,
+                    )
+
+                b_create, b_append = st.columns(2)
+                with b_create:
+                    if st.button(
+                        "Create OrderTrac quote from FAF",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=not has_lines,
+                        key=f"q_create_ot_{qid}",
+                        help="New OrderTrac QUOTE with all FAF cart lines",
+                    ):
+                        with st.spinner(
+                            "Creating OrderTrac QUOTE from FAF pricelist lines…"
+                        ):
+                            try:
+                                result = _save_header_and_push("create")
+                                if result.get("ok"):
+                                    st.success(
+                                        f"OrderTrac **QUOTE #{result.get('sales_order_id')}** "
+                                        f"created from FAF **{quote.get('quote_number')}** "
+                                        f"({result.get('lines_added', '?')} lines)."
+                                    )
+                                    if result.get("url"):
+                                        st.markdown(
+                                            f"[Open OrderTrac quote]({result['url']})"
+                                        )
+                                    st.rerun()
+                                else:
+                                    st.error(
+                                        result.get("error")
+                                        or "Create incomplete — check session / lines"
+                                    )
+                                    st.json(result)
+                            except Exception as e:
+                                st.error(str(e))
+                with b_append:
+                    if st.button(
+                        "Add FAF lines → linked OrderTrac quote",
+                        use_container_width=True,
+                        disabled=not (has_lines and linked),
+                        key=f"q_append_ot_{qid}",
+                        help="Open the linked OrderTrac quote and add any new FAF lines not already there",
+                    ):
+                        with st.spinner(
+                            "Adding new FAF lines onto linked OrderTrac quote…"
+                        ):
+                            try:
+                                result = _save_header_and_push("append")
+                                if result.get("ok"):
+                                    st.success(
+                                        f"OrderTrac **QUOTE #{result.get('sales_order_id')}** updated · "
+                                        f"added {result.get('lines_added', 0)}, "
+                                        f"already present {result.get('lines_skipped', 0)}."
+                                    )
+                                    if result.get("url"):
+                                        st.markdown(
+                                            f"[Open OrderTrac quote]({result['url']})"
+                                        )
+                                    st.rerun()
+                                else:
+                                    st.error(
+                                        result.get("error")
+                                        or "Add incomplete — check session / link"
+                                    )
+                                    st.json(result)
+                            except Exception as e:
+                                st.error(str(e))
+
+                if not has_lines:
+                    st.warning(
+                        "Add FAF catalog lines from **Search → Add from FAF → quote** first."
+                    )
+                elif not linked:
+                    st.caption(
+                        "After the first create, you can add more items from Search and use "
+                        "**Add FAF lines → linked OrderTrac quote**."
+                    )
+
+                # ---- Secondary: Export / delete ----
+                st.markdown("##### Local export")
+                x1, x2, x3 = st.columns(3)
+                with x1:
                     try:
-                        import re as _re
-
-                        _lines = svc.quote_lines(int(qid))
-                        n_upd = 0
-                        for _, lr in _lines.iterrows():
-                            lid = int(lr["id"])
-                            old_notes = str(lr.get("notes") or "")
-                            cleaned = _re.sub(
-                                r"(?i)\s*Stain:\s*[^·|\n]*", "", old_notes
-                            ).strip(" ·|\n")
-                            new_notes = (
-                                f"{cleaned} · Stain: {stain_default}".strip(" ·")
-                                if stain_default and cleaned
-                                else (
-                                    f"Stain: {stain_default}"
-                                    if stain_default
-                                    else cleaned
-                                )
-                            )
-                            svc.update_quote_line(
-                                lid,
-                                species=wood_default or lr.get("species"),
-                                finish_state=finish_default
-                                or lr.get("finish_state"),
-                                notes=new_notes,
-                            )
-                            n_upd += 1
-                        # Keep header notes in sync
-                        note_out = (notes or "").strip()
-                        note_out = _re.sub(r"(?im)^Wood:.*$", "", note_out).strip()
-                        note_out = _re.sub(r"(?im)^Stain:.*$", "", note_out).strip()
-                        note_out = _re.sub(r"(?im)^Finish:.*$", "", note_out).strip()
-                        bits = []
-                        if wood_default:
-                            bits.append(f"Wood: {wood_default}")
-                        if stain_default:
-                            bits.append(f"Stain: {stain_default}")
-                        if finish_default:
-                            bits.append(f"Finish: {finish_default}")
-                        if bits:
-                            note_out = (note_out + "\n" + "\n".join(bits)).strip()
-                        svc.update_quote(
-                            int(qid),
-                            notes=note_out,
-                            customer_name=cust.strip(),
-                            customer_phone=phone.strip(),
-                            customer_email=email.strip(),
-                            discount_pct=float(disc),
-                            tax_pct=float(tax),
+                        pdf_bytes = svc.export_quote_pdf(int(qid))
+                        st.download_button(
+                            "Download PDF",
+                            data=pdf_bytes,
+                            file_name=f"{quote.get('quote_number') or 'quote'}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
                         )
-                        st.success(
-                            f"Applied **{wood_default}** / **{stain_default}** / "
-                            f"**{finish_default}** to {n_upd} line(s)."
-                        )
-                        st.rerun()
                     except Exception as e:
-                        st.error(str(e))
-            with hs3:
-                st.caption(
-                    f"Active: **{wood_default or '—'}** · "
-                    f"**{stain_default or '—'}** · **{finish_default}**"
-                )
-
-            # ---- Lines ----
-            lines = svc.quote_lines(int(qid))
-            totals = svc.quote_totals(int(qid))
-            tcols = st.columns(4)
-            tcols[0].metric("Lines", totals.get("line_count", 0))
-            tcols[1].metric("Subtotal", f"${totals.get('subtotal', 0):,.2f}")
-            tcols[2].metric("Tax", f"${totals.get('tax_amount', 0):,.2f}")
-            tcols[3].metric("**TOTAL**", f"${totals.get('grand_total', 0):,.2f}")
-
-            if lines is None or lines.empty:
-                st.info(
-                    "No FAF lines yet. Go to **Search**, pick a price, then "
-                    "**Add from FAF → quote**."
-                )
-            else:
-                show = lines.copy()
-                # Friendly columns
-                keep = [
-                    c
-                    for c in [
-                        "id",
-                        "line_no",
-                        "qty",
-                        "part_number",
-                        "description",
-                        "vendor",
-                        "species",
-                        "finish_state",
-                        "unit_base",
-                        "unit_retail",
-                        "line_discount_pct",
-                        "line_total",
-                        "notes",
-                        "pricebook_id",
-                    ]
-                    if c in show.columns
-                ]
-                show = show[keep].rename(
-                    columns={
-                        "line_no": "#",
-                        "part_number": "Part #",
-                        "description": "Description",
-                        "vendor": "Builder",
-                        "species": "Wood",
-                        "finish_state": "Finish",
-                        "unit_base": "Wholesale",
-                        "unit_retail": "Retail each",
-                        "line_discount_pct": "Disc %",
-                        "line_total": "Line total",
-                        "pricebook_id": "FAF id",
-                    }
-                )
-                st.dataframe(
-                    show.drop(columns=["id"], errors="ignore"),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=min(420, 80 + 36 * len(show)),
-                )
-
-                # Edit one line
-                with st.expander("Edit or remove a line"):
-                    line_ids = lines["id"].tolist()
-                    labels_l = []
-                    for _, r in lines.iterrows():
-                        labels_l.append(
-                            f"id {int(r['id'])} · {r.get('part_number') or ''} · "
-                            f"{r.get('species') or ''} · qty {r.get('qty')} · "
-                            f"${float(r.get('line_total') or 0):,.2f}"
+                        st.caption(f"PDF: {e}")
+                with x2:
+                    try:
+                        xls_bytes = svc.export_quote_excel(int(qid))
+                        st.download_button(
+                            "Download Excel",
+                            data=xls_bytes,
+                            file_name=f"{quote.get('quote_number') or 'quote'}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
                         )
-                    lab_to_id = dict(zip(labels_l, line_ids))
-                    elab = st.selectbox("Line", labels_l, key=f"q_edit_line_{qid}")
-                    erow = lines[lines["id"] == lab_to_id[elab]].iloc[0]
-                    e1, e2, e3 = st.columns(3)
-                    with e1:
-                        eqty = st.number_input(
-                            "Qty",
-                            min_value=0.0,
-                            value=float(erow.get("qty") or 1),
-                            step=1.0,
-                            key=f"q_eqty_{qid}",
-                        )
-                    with e2:
-                        eretail = st.number_input(
-                            "Retail each",
-                            min_value=0.0,
-                            value=float(erow.get("unit_retail") or 0),
-                            step=1.0,
-                            key=f"q_eretail_{qid}",
-                        )
-                    with e3:
-                        edisc = st.number_input(
-                            "Line disc %",
-                            min_value=0.0,
-                            max_value=100.0,
-                            value=float(erow.get("line_discount_pct") or 0),
-                            step=1.0,
-                            key=f"q_edisc_{qid}",
-                        )
-                    e4, e5, e6 = st.columns(3)
-                    with e4:
-                        ewood = st.text_input(
-                            "Wood",
-                            value=str(erow.get("species") or ""),
-                            key=f"q_ewood_{qid}",
-                        )
-                    with e5:
-                        # extract stain from notes if present
-                        import re as _re
-
-                        _sn = str(erow.get("notes") or "")
-                        _sm = _re.search(r"(?i)Stain:\s*([^·|\n]+)", _sn)
-                        _stain0 = (
-                            _sm.group(1).strip()
-                            if _sm
-                            else st.session_state.get("quote_stain_default", "")
-                        )
-                        estain = st.text_input(
-                            "Stain",
-                            value=_stain0,
-                            key=f"q_estain_{qid}",
-                        )
-                    with e6:
-                        efin = st.selectbox(
-                            "Finish",
-                            ["finished", "unfinished"],
-                            index=0
-                            if str(erow.get("finish_state") or "finished")
-                            == "finished"
-                            else 1,
-                            key=f"q_efin_{qid}",
-                        )
-                    b1, b2 = st.columns(2)
-                    with b1:
-                        if st.button("Update line", key=f"q_upd_line_{qid}"):
-                            nnotes = str(erow.get("notes") or "")
-                            nnotes = _re.sub(
-                                r"(?i)\s*Stain:\s*[^·|\n]*", "", nnotes
-                            ).strip(" ·")
-                            if (estain or "").strip():
-                                nnotes = (
-                                    f"{nnotes} · Stain: {estain.strip()}".strip(" ·")
-                                    if nnotes
-                                    else f"Stain: {estain.strip()}"
-                                )
-                            svc.update_quote_line(
-                                int(lab_to_id[elab]),
-                                qty=float(eqty),
-                                unit_retail=float(eretail),
-                                line_discount_pct=float(edisc),
-                                species=(ewood or "").strip() or erow.get("species"),
-                                finish_state=efin,
-                                notes=nnotes,
-                            )
-                            st.success("Line updated (qty, price, wood, stain, finish).")
-                            st.rerun()
-                    with b2:
-                        if st.button("Remove line", key=f"q_del_line_{qid}"):
-                            svc.delete_quote_line(int(lab_to_id[elab]))
-                            st.warning("Line removed.")
-                            st.rerun()
-
-                # Custom line
-                with st.expander("Add custom line (not in catalog)"):
-                    cdesc = st.text_input("Description", key=f"q_cdesc_{qid}")
-                    c2, c3, c4 = st.columns(3)
-                    with c2:
-                        cqty = st.number_input(
-                            "Qty", min_value=0.5, value=1.0, key=f"q_cqty_{qid}"
-                        )
-                    with c3:
-                        cprice = st.number_input(
-                            "Retail each", min_value=0.0, value=0.0, key=f"q_cprice_{qid}"
-                        )
-                    with c4:
-                        cvend = st.text_input("Builder", key=f"q_cvend_{qid}")
-                    if st.button("Add custom line", key=f"q_add_custom_{qid}"):
-                        if not cdesc.strip():
-                            st.error("Description required.")
-                        else:
-                            svc.add_custom_quote_line(
-                                int(qid),
-                                description=cdesc.strip(),
-                                qty=float(cqty),
-                                unit_retail=float(cprice),
-                                vendor=cvend.strip(),
-                            )
-                            st.success("Custom line added.")
-                            st.rerun()
-
-            # ---- Primary: Create in OrderTrac ----
-            st.markdown("##### Create in OrderTrac")
-            st.caption(
-                "This is the main action: FAF prices → new OrderTrac **Quote** "
-                "(not a sale). Requires OrderTrac session "
-                "(`python scripts/ordertrac_login.py` if expired)."
-            )
-            # Salesperson for OT SO User field
-            ot_user_opts = ["Miller, Judson"]
-            try:
-                udf = svc.list_app_users(active_only=True)
-                if (
-                    udf is not None
-                    and not udf.empty
-                    and "ordertrac_display_name" in udf.columns
-                ):
-                    names = [
-                        x
-                        for x in udf["ordertrac_display_name"].dropna().tolist()
-                        if str(x).strip()
-                    ]
-                    if names:
-                        ot_user_opts = names
-            except Exception:
-                pass
-            sess = st.session_state.get("auth_session") or {}
-            default_ot = sess.get("ordertrac_display_name") or ot_user_opts[0]
-            if default_ot not in ot_user_opts:
-                ot_user_opts = [default_ot] + ot_user_opts
-            ot_ix = (
-                ot_user_opts.index(default_ot) if default_ot in ot_user_opts else 0
-            )
-
-            otu1, otu2 = st.columns([2, 1])
-            with otu1:
-                ot_user = st.selectbox(
-                    "OrderTrac sales user (on the quote)",
-                    ot_user_opts,
-                    index=ot_ix,
-                    key=f"q_ot_user_{qid}",
-                )
-            with otu2:
-                ot_loc = st.selectbox(
-                    "Location",
-                    ["Landrum", "Foothills Cabinets"],
-                    key=f"q_ot_loc_{qid}",
-                )
-
-            has_lines = lines is not None and not lines.empty
-            linked = bool(quote.get("ordertrac_guid") or quote.get("ordertrac_so_id"))
-
-            def _save_header_and_push(mode: str):
-                svc.update_quote(
-                    int(qid),
-                    customer_name=cust.strip(),
-                    customer_phone=phone.strip(),
-                    customer_email=email.strip(),
-                    notes=notes,
-                    discount_pct=float(disc),
-                    tax_pct=float(tax),
-                )
-                return svc.push_quote_to_ordertrac(
-                    int(qid),
-                    ot_user_display=ot_user,
-                    location=ot_loc,
-                    mode=mode,
-                )
-
-            b_create, b_append = st.columns(2)
-            with b_create:
-                if st.button(
-                    "Create OrderTrac quote from FAF",
-                    type="primary",
-                    use_container_width=True,
-                    disabled=not has_lines,
-                    key=f"q_create_ot_{qid}",
-                    help="New OrderTrac QUOTE with all FAF cart lines",
-                ):
-                    with st.spinner(
-                        "Creating OrderTrac QUOTE from FAF pricelist lines…"
-                    ):
-                        try:
-                            result = _save_header_and_push("create")
-                            if result.get("ok"):
-                                st.success(
-                                    f"OrderTrac **QUOTE #{result.get('sales_order_id')}** "
-                                    f"created from FAF **{quote.get('quote_number')}** "
-                                    f"({result.get('lines_added', '?')} lines)."
-                                )
-                                if result.get("url"):
-                                    st.markdown(
-                                        f"[Open OrderTrac quote]({result['url']})"
-                                    )
-                                st.rerun()
-                            else:
-                                st.error(
-                                    result.get("error")
-                                    or "Create incomplete — check session / lines"
-                                )
-                                st.json(result)
-                        except Exception as e:
-                            st.error(str(e))
-            with b_append:
-                if st.button(
-                    "Add FAF lines → linked OrderTrac quote",
-                    use_container_width=True,
-                    disabled=not (has_lines and linked),
-                    key=f"q_append_ot_{qid}",
-                    help="Open the linked OrderTrac quote and add any new FAF lines not already there",
-                ):
-                    with st.spinner(
-                        "Adding new FAF lines onto linked OrderTrac quote…"
-                    ):
-                        try:
-                            result = _save_header_and_push("append")
-                            if result.get("ok"):
-                                st.success(
-                                    f"OrderTrac **QUOTE #{result.get('sales_order_id')}** updated · "
-                                    f"added {result.get('lines_added', 0)}, "
-                                    f"already present {result.get('lines_skipped', 0)}."
-                                )
-                                if result.get("url"):
-                                    st.markdown(
-                                        f"[Open OrderTrac quote]({result['url']})"
-                                    )
-                                st.rerun()
-                            else:
-                                st.error(
-                                    result.get("error")
-                                    or "Add incomplete — check session / link"
-                                )
-                                st.json(result)
-                        except Exception as e:
-                            st.error(str(e))
-
-            if not has_lines:
-                st.warning(
-                    "Add FAF catalog lines from **Search → Add from FAF → quote** first."
-                )
-            elif not linked:
-                st.caption(
-                    "After the first create, you can add more items from Search and use "
-                    "**Add FAF lines → linked OrderTrac quote**."
-                )
-
-            # ---- Secondary: Export / delete ----
-            st.markdown("##### Local export")
-            x1, x2, x3 = st.columns(3)
-            with x1:
-                try:
-                    pdf_bytes = svc.export_quote_pdf(int(qid))
-                    st.download_button(
-                        "Download PDF",
-                        data=pdf_bytes,
-                        file_name=f"{quote.get('quote_number') or 'quote'}.pdf",
-                        mime="application/pdf",
+                    except Exception as e:
+                        st.caption(f"Excel: {e}")
+                with x3:
+                    if st.button(
+                        "Delete FAF quote",
                         use_container_width=True,
-                    )
-                except Exception as e:
-                    st.caption(f"PDF: {e}")
-            with x2:
-                try:
-                    xls_bytes = svc.export_quote_excel(int(qid))
-                    st.download_button(
-                        "Download Excel",
-                        data=xls_bytes,
-                        file_name=f"{quote.get('quote_number') or 'quote'}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-                except Exception as e:
-                    st.caption(f"Excel: {e}")
-            with x3:
-                if st.button(
-                    "Delete FAF quote",
-                    use_container_width=True,
-                ):
-                    svc.delete_quote(int(qid))
-                    st.session_state.pop("active_quote_id", None)
-                    st.warning("FAF quote deleted (OrderTrac copy unchanged).")
-                    st.rerun()
+                    ):
+                        svc.delete_quote(int(qid))
+                        st.session_state.pop("active_quote_id", None)
+                        st.warning("FAF quote deleted (OrderTrac copy unchanged).")
+                        st.rerun()
 
-            # Status
-            s1, s2 = st.columns(2)
-            with s1:
-                new_status = st.selectbox(
-                    "Status",
-                    ["draft", "sent", "won", "lost", "archived"],
-                    index=["draft", "sent", "won", "lost", "archived"].index(
-                        quote.get("status")
-                        if quote.get("status")
-                        in ("draft", "sent", "won", "lost", "archived")
-                        else "draft"
-                    ),
-                    key=f"q_status_{qid}",
-                )
-            with s2:
-                st.write("")
-                st.write("")
-                if st.button("Update status", key=f"q_status_btn_{qid}"):
-                    svc.update_quote(int(qid), status=new_status)
-                    st.success(f"Status → {new_status}")
-                    st.rerun()
+                # Status
+                s1, s2 = st.columns(2)
+                with s1:
+                    new_status = st.selectbox(
+                        "Status",
+                        ["draft", "sent", "won", "lost", "archived"],
+                        index=["draft", "sent", "won", "lost", "archived"].index(
+                            quote.get("status")
+                            if quote.get("status")
+                            in ("draft", "sent", "won", "lost", "archived")
+                            else "draft"
+                        ),
+                        key=f"q_status_{qid}",
+                    )
+                with s2:
+                    st.write("")
+                    st.write("")
+                    if st.button("Update status", key=f"q_status_btn_{qid}"):
+                        svc.update_quote(int(qid), status=new_status)
+                        st.success(f"Status → {new_status}")
+                        st.rerun()
 
 # ---------------------------------------------------------------------------
 # IMPORT — multi-file drop with per-builder multiplier
