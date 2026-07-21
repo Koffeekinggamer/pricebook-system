@@ -269,8 +269,8 @@ tab_drop, tab_admin = st.tabs(["Drop files", "Admin"])
 with tab_drop:
     st.subheader("Drop a builder price list")
     st.caption(
-        "Upload an **Excel** (`.xls` / `.xlsx` / `.xlsm`) file. "
-        "Choose the **builder**, review the catalog on screen, then download a **formatted PDF**."
+        "Upload an **Excel** (`.xls` / `.xlsx` / `.xlsm`) file, pick the **builder**, "
+        "and the **formatted PDF** appears on screen for the team."
     )
 
     upload = st.file_uploader(
@@ -306,38 +306,46 @@ with tab_drop:
             st.session_state["drop_sig"] = sig
             st.session_state["drop_parsed"] = prepared
             st.session_state["drop_filename"] = upload.name
+            st.session_state.pop("drop_pdf_cache", None)
 
     prepared = st.session_state.get("drop_parsed")
 
     if not prepared:
-        st.info("Drop an Excel price list above to begin.")
+        st.info("Drop an Excel price list above — the PDF will show here for your team.")
     elif prepared.get("error") and not prepared.get("rows"):
-        st.error(prepared.get("error") or "Could not parse file.")
+        st.error(prepared.get("error") or "Could not read this file.")
         if prepared.get("notes"):
             st.caption(str(prepared.get("notes")))
     else:
         if prepared.get("error"):
             st.warning(prepared["error"])
 
-        default_builder = (prepared.get("vendor") or Path(prepared.get("filename", "Builder")).stem).strip()
+        default_builder = (
+            prepared.get("vendor") or Path(prepared.get("filename", "Builder")).stem
+        ).strip()
         detected = prepared.get("detected_markup")
-        saved_mult = None
         try:
-            saved_mult = svc.get_vendor_multiplier(default_builder, default=DEFAULT_MULTIPLIER)
+            saved_mult = svc.get_vendor_multiplier(
+                default_builder, default=DEFAULT_MULTIPLIER
+            )
         except Exception:
             saved_mult = DEFAULT_MULTIPLIER
         try:
-            default_mult = float(detected) if detected is not None else float(saved_mult or DEFAULT_MULTIPLIER)
+            default_mult = (
+                float(detected)
+                if detected is not None
+                else float(saved_mult or DEFAULT_MULTIPLIER)
+            )
         except (TypeError, ValueError):
             default_mult = float(DEFAULT_MULTIPLIER)
 
-        c1, c2, c3 = st.columns([2.2, 1.0, 1.2])
+        c1, c2 = st.columns([2.4, 1.0])
         with c1:
             builder = st.text_input(
                 "Builder",
                 value=default_builder,
                 key="drop_builder_name",
-                help="Shown on the PDF and used if you save into the master book",
+                help="Title on the PDF — change this and the PDF updates",
             ).strip() or default_builder
         with c2:
             mult = st.number_input(
@@ -347,106 +355,147 @@ with tab_drop:
                 value=float(default_mult),
                 step=0.1,
                 key="drop_mult",
-                help="Retail = wholesale × multiplier",
+                help="Retail = wholesale × this number (shown on the PDF)",
             )
-        with c3:
-            st.write("")
-            st.write("")
-            st.caption(f"File: `{prepared.get('filename')}`")
-            st.caption(f"Parsed rows: **{int(prepared.get('row_count') or len(prepared.get('rows') or []))}**")
 
         raw_rows = list(prepared.get("rows") or [])
-        # Apply chosen builder name + mult for display
-        for r in raw_rows:
-            r["vendor"] = builder
-        frame = _rows_to_frame(raw_rows, float(mult))
-        preview = _preview_frame(frame)
-
-        st.markdown(f"### {builder}")
-        if preview.empty:
-            st.warning("No price rows found in this file.")
+        if not raw_rows:
+            st.warning("No prices found in this workbook.")
         else:
-            st.dataframe(
-                preview,
-                use_container_width=True,
-                hide_index=True,
-                height=min(520, 48 + 28 * min(len(preview), 16)),
+            for r in raw_rows:
+                r["vendor"] = builder
+            frame = _rows_to_frame(raw_rows, float(mult))
+            # Floor PDF: clean retail columns only (not the raw long-form dump)
+            pdf_frame = frame.copy()
+            keep = [
+                c
+                for c in (
+                    "part_number",
+                    "description",
+                    "species",
+                    "finish_state",
+                    "adjusted_price",
+                )
+                if c in pdf_frame.columns
+            ]
+            if keep:
+                pdf_frame = pdf_frame[keep]
+
+            # Build / cache PDF when builder, mult, or file changes
+            pdf_key = (
+                st.session_state.get("drop_sig"),
+                builder,
+                round(float(mult), 4),
             )
-
-            # PDF export
-            pdf_title = f"{builder} Price List"
-            try:
-                pdf_bytes = svc.export_pdf(frame, title=pdf_title)
-            except Exception as exc:
-                pdf_bytes = None
-                st.error(f"PDF generation failed: {exc}")
-
-            b1, b2, b3 = st.columns([1.2, 1.2, 1.5])
-            with b1:
+            cache = st.session_state.get("drop_pdf_cache") or {}
+            if cache.get("key") != pdf_key or not cache.get("bytes"):
+                with st.spinner(f"Building PDF for **{builder}**…"):
+                    try:
+                        pdf_bytes = svc.export_pdf(
+                            pdf_frame, title=f"{builder} Price List"
+                        )
+                    except Exception as exc:
+                        pdf_bytes = None
+                        st.error(f"PDF generation failed: {exc}")
                 if pdf_bytes:
-                    safe_name = "".join(
+                    st.session_state["drop_pdf_cache"] = {
+                        "key": pdf_key,
+                        "bytes": pdf_bytes,
+                        "builder": builder,
+                    }
+            else:
+                pdf_bytes = cache["bytes"]
+
+            if pdf_bytes:
+                safe_name = (
+                    "".join(
                         ch if ch.isalnum() or ch in ("-", "_") else "_"
                         for ch in builder
-                    )[:48] or "builder"
+                    )[:48]
+                    or "builder"
+                )
+
+                st.markdown(f"### {builder}")
+                st.caption(
+                    f"On-screen PDF for the team · "
+                    f"`{prepared.get('filename')}` · mult **{float(mult):g}**"
+                )
+
+                # Full-width in-app PDF viewer (no row table)
+                try:
+                    st.pdf(pdf_bytes, height=720)
+                except TypeError:
+                    st.pdf(pdf_bytes)
+                except Exception:
+                    # Fallback embed if st.pdf quirks on some builds
+                    import base64
+
+                    b64 = base64.b64encode(pdf_bytes).decode("ascii")
+                    st.markdown(
+                        f'<iframe src="data:application/pdf;base64,{b64}" '
+                        f'width="100%" height="720" style="border:1px solid #ccc;'
+                        f'border-radius:8px;"></iframe>',
+                        unsafe_allow_html=True,
+                    )
+
+                d1, d2 = st.columns(2)
+                with d1:
                     st.download_button(
-                        "Download formatted PDF",
+                        "Download PDF",
                         data=pdf_bytes,
                         file_name=f"{safe_name}_price_list.pdf",
                         mime="application/pdf",
                         type="primary",
                         use_container_width=True,
                     )
-            with b2:
-                # Also offer Excel of the standardized long form
-                try:
-                    xls_bytes = svc.export_excel(frame)
-                except Exception:
-                    xls_bytes = None
-                if xls_bytes:
-                    st.download_button(
-                        "Download Excel (long form)",
-                        data=xls_bytes,
-                        file_name=f"{safe_name}_price_list.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-            with b3:
-                save = st.button(
-                    "Save into master book",
-                    use_container_width=True,
-                    help="Replace this builder’s rows in the local master DB (then back up under Admin)",
-                )
-                if save:
-                    try:
-                        # Ensure mult applied on rows before commit
-                        commit_rows = []
-                        for src in raw_rows:
-                            r = dict(src)
-                            r["vendor"] = builder
-                            r["multiplier"] = float(mult)
-                            r["source_file"] = prepared.get("filename") or "upload"
-                            bp = r.get("base_price")
-                            if bp is not None:
-                                try:
-                                    r["adjusted_price"] = retail_from_wholesale(
-                                        float(bp), float(mult)
+                with d2:
+                    with st.expander("Admin: save into master book"):
+                        st.caption(
+                            "Optional — stores this builder for multipliers/backup. "
+                            "Not shown as a row grid on the floor."
+                        )
+                        if st.button(
+                            "Save into master book",
+                            use_container_width=True,
+                            key="btn_save_master",
+                        ):
+                            try:
+                                commit_rows = []
+                                for src in raw_rows:
+                                    r = dict(src)
+                                    r["vendor"] = builder
+                                    r["multiplier"] = float(mult)
+                                    r["source_file"] = (
+                                        prepared.get("filename") or "upload"
                                     )
-                                except (TypeError, ValueError):
-                                    pass
-                            commit_rows.append(r)
-                        result = svc.add_rows(commit_rows, mode="replace_vendor")
-                        svc.set_vendor_multiplier(
-                            builder, float(mult), notes="From Drop files PDF phase"
-                        )
-                        get_service.clear()
-                        st.success(
-                            f"Saved **{builder}** · "
-                            f"inserted {result.get('inserted', result.get('total', 0))} · "
-                            f"deleted prior {result.get('deleted', 0)}"
-                        )
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Could not save to master: {exc}")
+                                    bp = r.get("base_price")
+                                    if bp is not None:
+                                        try:
+                                            r["adjusted_price"] = (
+                                                retail_from_wholesale(
+                                                    float(bp), float(mult)
+                                                )
+                                            )
+                                        except (TypeError, ValueError):
+                                            pass
+                                    commit_rows.append(r)
+                                result = svc.add_rows(
+                                    commit_rows, mode="replace_vendor"
+                                )
+                                svc.set_vendor_multiplier(
+                                    builder,
+                                    float(mult),
+                                    notes="From Drop files PDF phase",
+                                )
+                                get_service.clear()
+                                st.success(
+                                    f"Saved **{builder}** · "
+                                    f"inserted {result.get('inserted', result.get('total', 0))} · "
+                                    f"deleted prior {result.get('deleted', 0)}"
+                                )
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Could not save to master: {exc}")
 
 
 # ===========================================================================
