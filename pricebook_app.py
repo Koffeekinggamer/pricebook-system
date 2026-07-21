@@ -28,8 +28,10 @@ if str(APP_DIR) not in sys.path:
 _FAVICON = APP_DIR / "assets" / "favicon.png"
 _LOGO = APP_DIR / "assets" / "logo.png"
 
-# Feature flags — content-accuracy phase (set True to restore quoting later)
-SHOW_ORDERTRAC_QUOTE = False
+# Feature flags — content-accuracy phase (set True to restore later)
+SHOW_ORDERTRAC_QUOTE = False  # quote tab + search cart + sidebar badge
+SHOW_ORDERTRAC_ADMIN = False  # Admin: OrderTrac connection, user sync, push tools
+# TRACE restore: set both True when resuming OrderTrac quoting + admin tooling
 
 st.set_page_config(
 
@@ -2144,238 +2146,241 @@ with tab_admin:
     st.caption(f"Last backup: {_last_backup_hint()}")
     st.caption(f"Viztech sync: {_viztech_sync_hint()}")
 
-    # ----- OrderTrac connection + user sync (admins) -----
-    st.divider()
-    st.markdown("### OrderTrac connection")
-    st.caption(
-        "Link the company OrderTrac account so FAF can create staff logins from "
-        "OrderTrac sales users and push quotes. Credentials live in "
-        "`.streamlit/secrets.toml` → `[ordertrac]` (never in git)."
-    )
-    _is_admin = (st.session_state.get("auth_role") or "") == "admin"
-    if not _is_admin:
-        st.info("Only **admin** users can manage OrderTrac connection and FAF accounts.")
-    else:
-        # Always use live service (clears stale cache if methods missing)
-        _ot_svc = _svc()
-        ot = _ot_svc.ordertrac_connection_status()
-        oc1, oc2, oc3 = st.columns(3)
-        oc1.metric("Secrets configured", "Yes" if ot.get("configured") else "No")
-        oc2.metric("Session file", "Yes" if ot.get("session_exists") else "No")
-        oc3.metric("FAF users", ot.get("faf_user_count") or 0)
+    # TRACE: Admin OrderTrac block — set SHOW_ORDERTRAC_ADMIN = True to restore
+    # (connection, sync users, FAF users, create/reset user, push FAF→OrderTrac)
+    if SHOW_ORDERTRAC_ADMIN:
+        # ----- OrderTrac connection + user sync (admins) -----
+        st.divider()
+        st.markdown("### OrderTrac connection")
         st.caption(
-            f"OrderTrac user: `{ot.get('username') or '—'}` · "
-            f"{ot.get('base_url')} · session `{ot.get('session_file')}`"
+            "Link the company OrderTrac account so FAF can create staff logins from "
+            "OrderTrac sales users and push quotes. Credentials live in "
+            "`.streamlit/secrets.toml` → `[ordertrac]` (never in git)."
         )
-        integ = ot.get("integration") or {}
-        if integ.get("status"):
-            st.caption(
-                f"Last integration status: **{integ.get('status')}** · "
-                f"ok at {integ.get('last_ok_at') or '—'} · "
-                f"{integ.get('last_error') or ''}"
-            )
-
-        otb1, otb2, otb3 = st.columns(3)
-        with otb1:
-            if st.button("Check OrderTrac session", use_container_width=True):
-                with st.spinner("Checking OrderTrac…"):
-                    chk = _ot_svc.ordertrac_check_session()
-                if chk.get("ok"):
-                    st.success("OrderTrac session is alive.")
-                else:
-                    st.error(chk.get("error") or "Session dead")
-                    st.info("Re-login: `python scripts/ordertrac_login.py`")
-        with otb2:
-            if st.button(
-                "Sync users from OrderTrac",
-                type="primary",
-                use_container_width=True,
-                help="Creates FAF logins for each OrderTrac sales user (UserGUID list)",
-            ):
-                with st.spinner("Fetching OrderTrac users and creating FAF accounts…"):
-                    sync_result = _ot_svc.sync_users_from_ordertrac(default_role="sales")
-                if sync_result.get("ok"):
-                    st.success(
-                        f"Synced · OT users: {sync_result.get('ot_count')} · "
-                        f"created: {len(sync_result.get('created') or [])} · "
-                        f"updated: {len(sync_result.get('updated') or [])}"
-                    )
-                    if sync_result.get("created"):
-                        st.warning(
-                            "New accounts — share temp passwords once, then users change them:"
-                        )
-                        for c in sync_result["created"]:
-                            st.code(
-                                f"{c['username']}  /  {c.get('temp_password', '')}",
-                                language=None,
-                            )
-                    if sync_result.get("skipped"):
-                        st.caption(
-                            "Skipped: " + ", ".join(sync_result["skipped"][:12])
-                        )
-                else:
-                    st.error(sync_result.get("error") or "Sync failed")
-                    st.info("Need live session: `python scripts/ordertrac_login.py`")
-        with otb3:
-            st.caption(
-                "CLI: `python scripts/ordertrac_sync_users.py` · "
-                "`python scripts/ordertrac_sync_users.py --check`"
-            )
-
-        st.markdown("##### FAF users")
-        try:
-            users_df = _ot_svc.list_app_users()
-        except Exception as e:
-            users_df = pd.DataFrame()
-            st.error(f"Could not load users: {e}")
-        if users_df is not None and not users_df.empty:
-            show_cols = [
-                c
-                for c in (
-                    "username",
-                    "display_name",
-                    "role",
-                    "active",
-                    "source",
-                    "ordertrac_display_name",
-                    "must_change_password",
-                    "last_login_at",
-                )
-                if c in users_df.columns
-            ]
-            st.dataframe(
-                users_df[show_cols], use_container_width=True, hide_index=True
-            )
+        _is_admin = (st.session_state.get("auth_role") or "") == "admin"
+        if not _is_admin:
+            st.info("Only **admin** users can manage OrderTrac connection and FAF accounts.")
         else:
-            st.info(
-                "No users yet — seed admin is created on first login, or run OrderTrac sync."
+            # Always use live service (clears stale cache if methods missing)
+            _ot_svc = _svc()
+            ot = _ot_svc.ordertrac_connection_status()
+            oc1, oc2, oc3 = st.columns(3)
+            oc1.metric("Secrets configured", "Yes" if ot.get("configured") else "No")
+            oc2.metric("Session file", "Yes" if ot.get("session_exists") else "No")
+            oc3.metric("FAF users", ot.get("faf_user_count") or 0)
+            st.caption(
+                f"OrderTrac user: `{ot.get('username') or '—'}` · "
+                f"{ot.get('base_url')} · session `{ot.get('session_file')}`"
             )
-
-        with st.expander("Create / reset a user"):
-            cu1, cu2 = st.columns(2)
-            with cu1:
-                nu = st.text_input("Username", key="new_user_name")
-                nd = st.text_input("Display name", key="new_user_disp")
-                nr = st.selectbox(
-                    "Role", ["sales", "floor", "admin"], key="new_user_role"
+            integ = ot.get("integration") or {}
+            if integ.get("status"):
+                st.caption(
+                    f"Last integration status: **{integ.get('status')}** · "
+                    f"ok at {integ.get('last_ok_at') or '—'} · "
+                    f"{integ.get('last_error') or ''}"
                 )
-            with cu2:
-                npw = st.text_input("Password", type="password", key="new_user_pw")
-                if st.button("Create user", key="btn_create_user"):
-                    if not nu or not npw:
-                        st.error("Username and password required.")
+
+            otb1, otb2, otb3 = st.columns(3)
+            with otb1:
+                if st.button("Check OrderTrac session", use_container_width=True):
+                    with st.spinner("Checking OrderTrac…"):
+                        chk = _ot_svc.ordertrac_check_session()
+                    if chk.get("ok"):
+                        st.success("OrderTrac session is alive.")
                     else:
-                        try:
-                            uid = _ot_svc.create_app_user(
-                                username=nu.strip(),
-                                password=npw,
-                                display_name=nd.strip() or nu.strip(),
-                                role=nr,
-                                source="local",
-                                must_change_password=False,
-                            )
-                            st.success(f"Created user id={uid} ({nu})")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(str(e))
-            st.markdown("**Reset password**")
-            if users_df is not None and not users_df.empty:
-                unames = users_df["username"].tolist()
-                ru = st.selectbox("User", unames, key="reset_user_sel")
-                rpw = st.text_input(
-                    "New password", type="password", key="reset_user_pw"
-                )
-                if st.button("Reset password", key="btn_reset_pw"):
-                    row = users_df[users_df["username"] == ru].iloc[0]
-                    _ot_svc.set_app_user_password(
-                        int(row["id"]), rpw, must_change=True
-                    )
-                    st.success(
-                        f"Password reset for {ru} (must change on next login)."
-                    )
-
-        st.markdown("##### Push FAF lines → OrderTrac QUOTE")
-        st.caption(
-            "Creates a new **Quote** in OrderTrac (not a sale) with custom lines "
-            "from FAF pricebook IDs. Vendor map: `config/ordertrac_vendor_map.json`."
-        )
-        push_ids = st.text_input(
-            "FAF pricebook IDs (comma-separated)",
-            value="479060,479078,482875,482881",
-            key="ot_push_ids",
-            help="Example Barkman dining set IDs from FAF master",
-        )
-        pq1, pq2, pq3 = st.columns(3)
-        with pq1:
-            push_qtys = st.text_input("Qtys (optional)", value="1,2,4,2", key="ot_push_qtys")
-        with pq2:
-            push_wood = st.text_input("Wood", value="Red Oak", key="ot_push_wood")
-        with pq3:
-            push_stain = st.text_input(
-                "Stain", value="Michael's Cherry (OCS-113)", key="ot_push_stain"
-            )
-        ot_user_opts = []
-        try:
-            udf = _ot_svc.list_app_users(active_only=True)
-            if not udf.empty and "ordertrac_display_name" in udf.columns:
-                ot_user_opts = [
-                    x
-                    for x in udf["ordertrac_display_name"].dropna().tolist()
-                    if str(x).strip()
-                ]
-        except Exception:
-            pass
-        if not ot_user_opts:
-            ot_user_opts = ["Miller, Judson"]
-        push_user = st.selectbox(
-            "OrderTrac sales user",
-            options=ot_user_opts,
-            index=0,
-            key="ot_push_user",
-        )
-        if st.button("Push to OrderTrac as QUOTE", type="primary", key="btn_ot_push"):
-            try:
-                ids = [int(x.strip()) for x in push_ids.split(",") if x.strip()]
-                qtys = (
-                    [float(x.strip()) for x in push_qtys.split(",") if x.strip()]
-                    if push_qtys.strip()
-                    else None
-                )
-                rows = []
-                for i in ids:
-                    r = _ot_svc.get_row(i)
-                    if not r:
-                        st.error(f"Missing FAF id {i}")
-                        rows = []
-                        break
-                    rows.append(r)
-                if rows:
-                    with st.spinner("Pushing quote to OrderTrac (browser automation)…"):
-                        result = _ot_svc.push_rows_to_ordertrac(
-                            rows,
-                            qtys=qtys,
-                            wood=push_wood.strip(),
-                            stain=push_stain.strip(),
-                            ot_user_display=push_user,
-                            location="Landrum",
-                            project=f"FAF push {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                            customer_name="FAF Floor Quote",
-                        )
-                    if result.get("ok"):
+                        st.error(chk.get("error") or "Session dead")
+                        st.info("Re-login: `python scripts/ordertrac_login.py`")
+            with otb2:
+                if st.button(
+                    "Sync users from OrderTrac",
+                    type="primary",
+                    use_container_width=True,
+                    help="Creates FAF logins for each OrderTrac sales user (UserGUID list)",
+                ):
+                    with st.spinner("Fetching OrderTrac users and creating FAF accounts…"):
+                        sync_result = _ot_svc.sync_users_from_ordertrac(default_role="sales")
+                    if sync_result.get("ok"):
                         st.success(
-                            f"OrderTrac QUOTE {result.get('sales_order_id')} created."
+                            f"Synced · OT users: {sync_result.get('ot_count')} · "
+                            f"created: {len(sync_result.get('created') or [])} · "
+                            f"updated: {len(sync_result.get('updated') or [])}"
                         )
-                        if result.get("url"):
-                            st.markdown(f"[Open in OrderTrac]({result['url']})")
+                        if sync_result.get("created"):
+                            st.warning(
+                                "New accounts — share temp passwords once, then users change them:"
+                            )
+                            for c in sync_result["created"]:
+                                st.code(
+                                    f"{c['username']}  /  {c.get('temp_password', '')}",
+                                    language=None,
+                                )
+                        if sync_result.get("skipped"):
+                            st.caption(
+                                "Skipped: " + ", ".join(sync_result["skipped"][:12])
+                            )
                     else:
-                        st.error(result.get("error") or "Push incomplete")
-                        st.json(result)
-            except Exception as e:
-                st.error(str(e))
+                        st.error(sync_result.get("error") or "Sync failed")
+                        st.info("Need live session: `python scripts/ordertrac_login.py`")
+            with otb3:
+                st.caption(
+                    "CLI: `python scripts/ordertrac_sync_users.py` · "
+                    "`python scripts/ordertrac_sync_users.py --check`"
+                )
 
-        handoff = Path.home() / "Documents" / "ordertrac-session" / "faf-login-handoff.txt"
-        if handoff.is_file():
-            st.caption(f"Staff login handoff file: `{handoff}`")
+            st.markdown("##### FAF users")
+            try:
+                users_df = _ot_svc.list_app_users()
+            except Exception as e:
+                users_df = pd.DataFrame()
+                st.error(f"Could not load users: {e}")
+            if users_df is not None and not users_df.empty:
+                show_cols = [
+                    c
+                    for c in (
+                        "username",
+                        "display_name",
+                        "role",
+                        "active",
+                        "source",
+                        "ordertrac_display_name",
+                        "must_change_password",
+                        "last_login_at",
+                    )
+                    if c in users_df.columns
+                ]
+                st.dataframe(
+                    users_df[show_cols], use_container_width=True, hide_index=True
+                )
+            else:
+                st.info(
+                    "No users yet — seed admin is created on first login, or run OrderTrac sync."
+                )
+
+            with st.expander("Create / reset a user"):
+                cu1, cu2 = st.columns(2)
+                with cu1:
+                    nu = st.text_input("Username", key="new_user_name")
+                    nd = st.text_input("Display name", key="new_user_disp")
+                    nr = st.selectbox(
+                        "Role", ["sales", "floor", "admin"], key="new_user_role"
+                    )
+                with cu2:
+                    npw = st.text_input("Password", type="password", key="new_user_pw")
+                    if st.button("Create user", key="btn_create_user"):
+                        if not nu or not npw:
+                            st.error("Username and password required.")
+                        else:
+                            try:
+                                uid = _ot_svc.create_app_user(
+                                    username=nu.strip(),
+                                    password=npw,
+                                    display_name=nd.strip() or nu.strip(),
+                                    role=nr,
+                                    source="local",
+                                    must_change_password=False,
+                                )
+                                st.success(f"Created user id={uid} ({nu})")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(str(e))
+                st.markdown("**Reset password**")
+                if users_df is not None and not users_df.empty:
+                    unames = users_df["username"].tolist()
+                    ru = st.selectbox("User", unames, key="reset_user_sel")
+                    rpw = st.text_input(
+                        "New password", type="password", key="reset_user_pw"
+                    )
+                    if st.button("Reset password", key="btn_reset_pw"):
+                        row = users_df[users_df["username"] == ru].iloc[0]
+                        _ot_svc.set_app_user_password(
+                            int(row["id"]), rpw, must_change=True
+                        )
+                        st.success(
+                            f"Password reset for {ru} (must change on next login)."
+                        )
+
+            st.markdown("##### Push FAF lines → OrderTrac QUOTE")
+            st.caption(
+                "Creates a new **Quote** in OrderTrac (not a sale) with custom lines "
+                "from FAF pricebook IDs. Vendor map: `config/ordertrac_vendor_map.json`."
+            )
+            push_ids = st.text_input(
+                "FAF pricebook IDs (comma-separated)",
+                value="479060,479078,482875,482881",
+                key="ot_push_ids",
+                help="Example Barkman dining set IDs from FAF master",
+            )
+            pq1, pq2, pq3 = st.columns(3)
+            with pq1:
+                push_qtys = st.text_input("Qtys (optional)", value="1,2,4,2", key="ot_push_qtys")
+            with pq2:
+                push_wood = st.text_input("Wood", value="Red Oak", key="ot_push_wood")
+            with pq3:
+                push_stain = st.text_input(
+                    "Stain", value="Michael's Cherry (OCS-113)", key="ot_push_stain"
+                )
+            ot_user_opts = []
+            try:
+                udf = _ot_svc.list_app_users(active_only=True)
+                if not udf.empty and "ordertrac_display_name" in udf.columns:
+                    ot_user_opts = [
+                        x
+                        for x in udf["ordertrac_display_name"].dropna().tolist()
+                        if str(x).strip()
+                    ]
+            except Exception:
+                pass
+            if not ot_user_opts:
+                ot_user_opts = ["Miller, Judson"]
+            push_user = st.selectbox(
+                "OrderTrac sales user",
+                options=ot_user_opts,
+                index=0,
+                key="ot_push_user",
+            )
+            if st.button("Push to OrderTrac as QUOTE", type="primary", key="btn_ot_push"):
+                try:
+                    ids = [int(x.strip()) for x in push_ids.split(",") if x.strip()]
+                    qtys = (
+                        [float(x.strip()) for x in push_qtys.split(",") if x.strip()]
+                        if push_qtys.strip()
+                        else None
+                    )
+                    rows = []
+                    for i in ids:
+                        r = _ot_svc.get_row(i)
+                        if not r:
+                            st.error(f"Missing FAF id {i}")
+                            rows = []
+                            break
+                        rows.append(r)
+                    if rows:
+                        with st.spinner("Pushing quote to OrderTrac (browser automation)…"):
+                            result = _ot_svc.push_rows_to_ordertrac(
+                                rows,
+                                qtys=qtys,
+                                wood=push_wood.strip(),
+                                stain=push_stain.strip(),
+                                ot_user_display=push_user,
+                                location="Landrum",
+                                project=f"FAF push {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                                customer_name="FAF Floor Quote",
+                            )
+                        if result.get("ok"):
+                            st.success(
+                                f"OrderTrac QUOTE {result.get('sales_order_id')} created."
+                            )
+                            if result.get("url"):
+                                st.markdown(f"[Open in OrderTrac]({result['url']})")
+                        else:
+                            st.error(result.get("error") or "Push incomplete")
+                            st.json(result)
+                except Exception as e:
+                    st.error(str(e))
+
+            handoff = Path.home() / "Documents" / "ordertrac-session" / "faf-login-handoff.txt"
+            if handoff.is_file():
+                st.caption(f"Staff login handoff file: `{handoff}`")
 
 
     st.markdown("##### Viztech monthly update")
